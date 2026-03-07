@@ -33,6 +33,16 @@ Post → Metrics → AI Analysis (hit/average/miss) → Learnings → Playbook �
 - Files: `kebab-case`. Components: `PascalCase`. Utils/hooks: `camelCase`. Constants: `UPPER_SNAKE_CASE`.
 - Same concept = same word: posts, drafts, pillars, playbook, hooks, learnings, metrics.
 
+### File Organization
+- **Backend files**: Max ~300 lines. Split by domain: `memory.py`, `ideator.py`, `scheduler.py`, etc.
+- **Frontend components**: Max ~200 lines per component. Extract shared UI into `frontend/components/ui/`.
+- **Shared components**: Reusable primitives in `frontend/components/ui/` (buttons, cards, badges, modals, skeletons, empty states).
+- **Page components**: Feature-specific in `frontend/app/linkedin/components/`. Compose from shared UI.
+- **API routes**: One file per resource. Max ~80 lines. Proxy only — no business logic.
+- **Types**: All in `frontend/types/linkedin.ts`. Group by domain with comments.
+- **Hooks**: Custom React hooks in `frontend/hooks/`. One hook per file.
+- **Utils**: Frontend utils in `frontend/lib/utils.ts`. Backend utils in `backend/utils.py`.
+
 ### Quality Bar
 - Mobile-first at 375px. Touch targets ≥ 44px. Input font ≥ 16px.
 - All 5 states: loading, empty, error, partial, edge case.
@@ -59,6 +69,8 @@ Specialist agents in `.claude/agents/`. Invoke based on task type.
 | After non-trivial code | `qa-engineer` | **AFTER** — edge cases, failure modes |
 | Backend/API work | `sre` | **DURING** — performance, reliability |
 | AI/LLM features | `ai-architect` | **BEFORE** — AI-native design |
+| Content strategy | `content-strategist` | **PERIODIC** — growth analysis, pillar scoring, experiments |
+| Growth stalls | `content-strategist` | **DIAGNOSTIC** — find root cause with data |
 | 3+ files changed | `orchestrator` | **COORDINATES** — propose → challenge → resolve |
 
 ### Rules

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend import config
 from backend.db import get_conn
+from backend.tasks import create_task, get_task
 from backend.models import (
     DraftGenerateRequest,
     CalendarEntryCreate,
@@ -67,6 +68,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount sub-routers
+from backend.routes_memory import router as memory_router
+app.include_router(memory_router)
+
 
 def _row_to_dict(row) -> dict:
     if row is None:
@@ -76,6 +81,17 @@ def _row_to_dict(row) -> dict:
 
 def _rows_to_list(rows) -> list[dict]:
     return [dict(r) for r in rows]
+
+
+# ── Background Tasks ─────────────────────────────────────────────
+
+@app.get("/tasks/{task_id}")
+async def task_status(task_id: str):
+    """Check status of a background task."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, f"Task {task_id} not found")
+    return task
 
 
 # ── Health ───────────────────────────────────────────────────────
@@ -139,13 +155,8 @@ async def batch_metrics(post_ids: str = ""):
         return {"metrics": {}}
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(f"""
-        SELECT ms.* FROM metrics_snapshots ms
-        INNER JOIN (
-            SELECT post_id, MAX(snapshot_at) as max_at
-            FROM metrics_snapshots
-            WHERE post_id IN ({placeholders})
-            GROUP BY post_id
-        ) latest ON ms.post_id = latest.post_id AND ms.snapshot_at = latest.max_at
+        SELECT * FROM latest_metrics
+        WHERE post_id IN ({placeholders})
     """, ids).fetchall()
     result = {}
     for row in rows:
@@ -277,15 +288,17 @@ async def add_metrics(post_id: int, req: MetricsCreate):
     engagement_score = (interaction_score / req.impressions) if req.impressions > 0 else 0.0
 
     snapshot_type = None
+    now = datetime.now(timezone.utc).isoformat()
 
     cur = conn.execute(
         """INSERT INTO metrics_snapshots
            (post_id, impressions, members_reached, profile_viewers, followers_gained,
-            likes, comments, reposts, saves, sends, engagement_score, interaction_score, snapshot_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            likes, comments, reposts, saves, sends, engagement_score, interaction_score,
+            snapshot_type, snapshot_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (post_id, req.impressions, req.members_reached, req.profile_viewers,
          req.followers_gained, req.likes, req.comments, req.reposts,
-         req.saves, req.sends, engagement_score, interaction_score, snapshot_type),
+         req.saves, req.sends, engagement_score, interaction_score, snapshot_type, now),
     )
     conn.commit()
     snapshot = conn.execute(
@@ -458,7 +471,7 @@ async def extract_hook(post_id: int):
 async def list_hooks(style: str | None = None):
     conn = get_conn()
     if style:
-        rows = conn.execute("SELECT * FROM hooks WHERE style = ? ORDER BY avg_engagement_score DESC NULLS LAST", (style,)).fetchall()
+        rows = conn.execute("SELECT * FROM hooks WHERE LOWER(style) = LOWER(?) ORDER BY avg_engagement_score DESC NULLS LAST", (style,)).fetchall()
     else:
         rows = conn.execute("SELECT * FROM hooks ORDER BY avg_engagement_score DESC NULLS LAST").fetchall()
     return {"hooks": _rows_to_list(rows)}
@@ -580,9 +593,10 @@ async def use_hashtag_set(set_id: int):
 
 @app.post("/drafts/generate")
 async def generate_draft(req: DraftGenerateRequest):
-    """Generate AI draft variants for a topic."""
+    """Generate AI draft variants — runs in background, returns task_id."""
     from backend.drafter import generate_drafts
-    try:
+
+    async def _run():
         drafts = await generate_drafts(
             topic=req.topic,
             pillar_id=req.pillar_id,
@@ -590,9 +604,9 @@ async def generate_draft(req: DraftGenerateRequest):
             num_variants=req.num_variants,
         )
         return {"drafts": drafts}
-    except Exception as e:
-        logger.exception("Draft generation failed")
-        raise HTTPException(500, f"Draft generation failed: {e}")
+
+    task_id = create_task("draft_generate", _run())
+    return {"task_id": task_id, "status": "running"}
 
 
 @app.get("/drafts")
@@ -653,6 +667,27 @@ async def mark_draft_posted(draft_id: int, post_id: int):
     conn.commit()
     row = conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
     return {"draft": _row_to_dict(row)}
+
+
+@app.post("/drafts/{draft_id}/auto-schedule")
+async def auto_schedule_draft_endpoint(draft_id: int):
+    """Auto-schedule a draft to the next optimal calendar slot using LLM."""
+    from backend.scheduler import auto_schedule_draft
+
+    try:
+        entry = await auto_schedule_draft(draft_id)
+    except ValueError as e:
+        detail = str(e)
+        if "not found" in detail:
+            raise HTTPException(status_code=404, detail=detail)
+        if "already scheduled" in detail:
+            raise HTTPException(status_code=409, detail=detail)
+        raise HTTPException(status_code=400, detail=detail)
+    except Exception as e:
+        logger.error("Auto-schedule failed for draft %d", draft_id, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Scheduling failed: {e}")
+
+    return {"calendar_entry": entry}
 
 
 def _nyc_now() -> str:
@@ -717,6 +752,16 @@ async def publish_draft(draft_id: int, post_url: str | None = None, post_type: s
         ),
     )
     post_id = cur.lastrowid
+
+    # Link idea → draft → post if this draft came from an idea
+    idea_row = conn.execute(
+        "SELECT id FROM ideas WHERE draft_id = ?", (draft_id,)
+    ).fetchone()
+    if idea_row:
+        conn.execute(
+            "UPDATE ideas SET status = 'posted' WHERE id = ?", (idea_row["id"],)
+        )
+
     conn.execute(
         "UPDATE drafts SET status = 'posted', posted_post_id = ?, updated_at = ? WHERE id = ?",
         (post_id, now_iso, draft_id),
@@ -724,7 +769,13 @@ async def publish_draft(draft_id: int, post_url: str | None = None, post_type: s
     conn.commit()
 
     post = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
-    return {"post": _row_to_dict(post), "draft_id": draft_id}
+
+    logger.info(
+        "Draft %d published as post %d — add metrics to trigger analysis",
+        draft_id, post_id,
+    )
+
+    return {"post": _row_to_dict(post), "draft_id": draft_id, "needs_metrics": True}
 
 
 # ── Learnings ────────────────────────────────────────────────────
@@ -758,60 +809,6 @@ async def get_playbook():
 
 # ── Content Calendar ─────────────────────────────────────────────
 
-@app.get("/calendar/suggestions")
-async def calendar_suggestions():
-    """AI suggests next week's content plan."""
-    from backend import prompts as _prompts
-
-    conn = get_conn()
-
-    pillars = conn.execute("SELECT id, name, description FROM content_pillars ORDER BY sort_order").fetchall()
-    pillars_text = "\n".join(f"- {r['name']}: {r['description'] or 'no description'}" for r in pillars) or "No pillars defined"
-
-    series = conn.execute("SELECT name, frequency, preferred_day, preferred_time FROM content_series WHERE is_active = 1").fetchall()
-    series_text = "\n".join(
-        f"- {r['name']} ({r['frequency']}, {r['preferred_day'] or 'any day'} {r['preferred_time'] or ''})"
-        for r in series
-    ) or "No active series"
-
-    post_count = conn.execute("SELECT COUNT(*) as c FROM posts WHERE author = 'me' AND posted_at >= date('now', '-30 days')").fetchone()["c"]
-    posting_freq = round(post_count / 4.3, 1) if post_count else 0
-
-    pillar_balance = conn.execute("""
-        SELECT cp.name, COUNT(p.id) as count
-        FROM content_pillars cp LEFT JOIN posts p ON p.pillar_id = cp.id AND p.author = 'me' AND p.posted_at >= date('now', '-30 days')
-        GROUP BY cp.id
-    """).fetchall()
-    balance_text = "\n".join(f"- {r['name']}: {r['count']} posts" for r in pillar_balance) or "No data"
-
-    heatmap = conn.execute("""
-        SELECT strftime('%w', posted_at) as dow, strftime('%H', posted_at) as hour, AVG(ms.engagement_score) as avg_eng
-        FROM posts p JOIN metrics_snapshots ms ON ms.post_id = p.id
-        WHERE p.author = 'me' AND p.posted_at IS NOT NULL
-        GROUP BY dow, hour ORDER BY avg_eng DESC LIMIT 5
-    """).fetchall()
-    days_list = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-    best_times = "\n".join(
-        f"- {days_list[int(r['dow'])]} {r['hour']}:00 (avg engagement: {r['avg_eng']:.4f})" for r in heatmap
-    ) or "Not enough data"
-
-    from backend.llm import generate
-    prompt_text = _prompts.CALENDAR_SUGGESTIONS.format(
-        pillars=pillars_text, series=series_text,
-        posting_frequency=posting_freq, pillar_balance=balance_text,
-        best_times=best_times,
-    )
-    result = await generate(prompt_text, system=_prompts.SYSTEM_DRAFTER)
-
-    try:
-        from backend.utils import parse_llm_json
-        suggestions = parse_llm_json(result)
-    except (json.JSONDecodeError, IndexError, ValueError):
-        suggestions = [{"raw": result}]
-
-    return {"suggestions": suggestions}
-
-
 @app.get("/calendar")
 async def list_calendar(date_from: str | None = None, date_to: str | None = None):
     conn = get_conn()
@@ -838,6 +835,12 @@ async def create_calendar_entry(req: CalendarEntryCreate):
         (req.scheduled_date, req.scheduled_time, req.draft_id,
          req.pillar_id, req.series_id, req.status, req.notes),
     )
+    # Mark draft as scheduled
+    if req.draft_id:
+        conn.execute(
+            "UPDATE drafts SET status = 'scheduled', updated_at = ? WHERE id = ? AND status IN ('draft', 'revised')",
+            (datetime.now(timezone.utc).isoformat(), req.draft_id),
+        )
     conn.commit()
     row = conn.execute("SELECT * FROM content_calendar WHERE id = ?", (cur.lastrowid,)).fetchone()
     return {"entry": _row_to_dict(row)}
@@ -940,6 +943,13 @@ async def series_stats(series_id: int):
 
 @app.get("/goals")
 async def list_goals(status: str | None = None):
+    # Refresh current values from live metrics before returning
+    from backend.strategist import refresh_goal_progress
+    try:
+        refresh_goal_progress()
+    except Exception as e:
+        logger.warning("Goal progress refresh failed: %s", e)
+
     conn = get_conn()
     if status:
         rows = conn.execute("SELECT * FROM goals WHERE status = ? ORDER BY created_at DESC", (status,)).fetchall()
@@ -1307,32 +1317,39 @@ async def dashboard_analytics():
 
 @app.post("/analyze/batch")
 async def analyze_batch(post_ids: list[int] = Body(...), force: bool = Query(False)):
-    """Batch AI analysis on multiple posts — fewer LLM calls than analyzing individually."""
+    """Batch AI analysis — runs in background, returns task_id."""
     from backend.analyzer import analyze_batch as _analyze_batch
 
     if not post_ids:
         raise HTTPException(400, "post_ids list is required")
 
-    try:
-        result = await _analyze_batch(post_ids, force=force)
-        return result
-    except Exception as e:
-        logger.exception("Batch analysis failed")
-        raise HTTPException(500, f"Batch analysis failed: {e}")
+    task_id = create_task("analyze_batch", _analyze_batch(post_ids, force=force))
+    return {"task_id": task_id, "status": "running"}
 
 
 @app.post("/analyze/{post_id}")
 async def analyze_post(post_id: int):
-    """Run AI analysis on a post after metrics entry."""
+    """Run AI analysis on a post — runs in background, returns task_id."""
     from backend.analyzer import analyze_post as _analyze
-    try:
+
+    # Validate post exists before launching background task
+    conn = get_conn()
+    post = conn.execute("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if not post:
+        raise HTTPException(404, f"Post {post_id} not found")
+
+    async def _run():
         result = await _analyze(post_id)
+        try:
+            from backend.memory import update_memory_after_analysis
+            await update_memory_after_analysis(post_id)
+            logger.info("Memory updated after analysis of post %d", post_id)
+        except Exception as mem_err:
+            logger.warning("Memory update skipped for post %d: %s", post_id, mem_err)
         return result
-    except ValueError as e:
-        raise HTTPException(404, str(e))
-    except Exception as e:
-        logger.exception("Analysis failed for post %d", post_id)
-        raise HTTPException(500, f"Analysis failed: {e}")
+
+    task_id = create_task(f"analyze_post_{post_id}", _run())
+    return {"task_id": task_id, "status": "running"}
 
 
 @app.post("/playbook/regenerate")
@@ -1598,36 +1615,21 @@ async def extract_hook_from_content(body: ExtractHookRequest = Body(...)):
 
 @app.post("/posts/auto-fill")
 async def auto_fill_post_metadata(body: dict = Body(...)):
-    import json as _json
-    from backend import prompts as _prompts
-
     content = body.get("content", "")
     if not content.strip():
         raise HTTPException(400, "content is required")
 
-    # Build pillars context for the LLM
     conn = get_conn()
-    pillars = conn.execute("SELECT id, name FROM content_pillars ORDER BY sort_order").fetchall()
-    pillars_text = "\n".join(f"- id={p['id']}: {p['name']}" for p in pillars) if pillars else "None defined"
-
-    prompt_text = _prompts.AUTO_FILL.format(content=content, pillars_text=pillars_text)
-    raw = await generate(prompt_text)
-
-    try:
-        from backend.utils import parse_llm_json
-        result = parse_llm_json(raw)
-    except Exception:
-        logger.error("Failed to parse auto-fill LLM response: %s", raw[:300],
-                      extra={"action": "Check LLM response format; may need prompt adjustment."})
-        raise HTTPException(500, "Failed to extract metadata from content. Please try again.")
+    meta = await _auto_fill_from_draft(content, conn=conn)
+    import json as _json
 
     return {
-        "hook_line": result.get("hook_line", ""),
-        "hook_style": result.get("hook_style", ""),
-        "cta_type": result.get("cta_type", "none"),
-        "post_type": result.get("post_type", "text"),
-        "topic_tags": result.get("topic_tags", []),
-        "pillar_id": result.get("pillar_id"),
+        "hook_line": meta["hook_line"],
+        "hook_style": (meta["hook_style"] or "").lower(),
+        "cta_type": (meta["cta_type"] or "none").lower(),
+        "post_type": meta["post_type"],
+        "topic_tags": _json.loads(meta["topic_tags"]) if isinstance(meta["topic_tags"], str) else meta.get("topic_tags", []),
+        "pillar_id": meta["pillar_id"],
     }
 
 
@@ -1916,6 +1918,235 @@ async def upload_draft_image(draft_id: int, file: UploadFile = File(...)):
 
     logger.info("Draft %d image uploaded to LinkedIn as %s", draft_id, image_urn)
     return {"image_urn": image_urn}
+
+
+# ── Metrics Import ──────────────────────────────────────────────
+
+
+def _parse_metrics_file(
+    file_bytes: bytes, filename: str
+) -> list[dict]:
+    """Parse a LinkedIn Creator Analytics CSV or XLSX export into row dicts.
+
+    Returns a list of dicts with normalised keys. Raises HTTPException on
+    parse failures so the endpoint handler stays thin.
+    """
+    import csv
+    import io
+
+    rows: list[dict] = []
+
+    # Column name mapping: LinkedIn export header -> our internal key
+    COLUMN_MAP: dict[str, str] = {
+        "post title": "title",
+        "title": "title",
+        "post link": "post_url",
+        "post url": "post_url",
+        "url": "post_url",
+        "link": "post_url",
+        "impressions": "impressions",
+        "reactions": "likes",
+        "likes": "likes",
+        "comments": "comments",
+        "reposts": "reposts",
+        "shares": "reposts",
+        "saves": "saves",
+        "engagement rate": "engagement_rate",
+        "engagement": "engagement_rate",
+        "date posted": "date_posted",
+        "date": "date_posted",
+        "posted date": "date_posted",
+        "post content": "content",
+        "content": "content",
+    }
+
+    def _normalise_headers(raw_headers: list[str]) -> dict[int, str]:
+        """Map column index -> internal key name."""
+        mapping: dict[int, str] = {}
+        for idx, h in enumerate(raw_headers):
+            key = COLUMN_MAP.get(h.strip().lower())
+            if key:
+                mapping[idx] = key
+        return mapping
+
+    def _safe_int(val: str | float | int | None) -> int:
+        if val is None or val == "":
+            return 0
+        try:
+            return int(float(str(val).replace(",", "").replace("%", "").strip()))
+        except (ValueError, TypeError):
+            return 0
+
+    def _safe_float(val: str | float | int | None) -> float:
+        if val is None or val == "":
+            return 0.0
+        try:
+            return float(str(val).replace(",", "").replace("%", "").strip())
+        except (ValueError, TypeError):
+            return 0.0
+
+    lower_name = filename.lower()
+
+    if lower_name.endswith((".xlsx", ".xls")):
+        try:
+            import openpyxl
+        except ImportError:
+            raise HTTPException(
+                400,
+                "XLSX support requires the openpyxl package. "
+                "Install it with: pip install openpyxl — or export as CSV instead.",
+            )
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            if ws is None:
+                raise HTTPException(400, "XLSX file has no active worksheet")
+
+            all_rows = list(ws.iter_rows(values_only=True))
+            if len(all_rows) < 2:
+                raise HTTPException(400, "XLSX file has no data rows (only header or empty)")
+
+            header_row = [str(c) if c is not None else "" for c in all_rows[0]]
+            col_map = _normalise_headers(header_row)
+            if not col_map:
+                raise HTTPException(
+                    400,
+                    f"Could not recognise any LinkedIn columns in XLSX headers: {header_row}. "
+                    "Expected columns like: Post title, Post link, Impressions, Reactions, Comments, Reposts, Saves.",
+                )
+
+            for row_idx, data_row in enumerate(all_rows[1:], start=2):
+                record: dict[str, str | int | float] = {}
+                for col_idx, key in col_map.items():
+                    if col_idx < len(data_row):
+                        cell_val = data_row[col_idx]
+                        if key in ("impressions", "likes", "comments", "reposts", "saves"):
+                            record[key] = _safe_int(cell_val)
+                        elif key == "engagement_rate":
+                            record[key] = _safe_float(cell_val)
+                        else:
+                            record[key] = str(cell_val) if cell_val is not None else ""
+                record["_source_row"] = row_idx
+                rows.append(record)
+            wb.close()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("Failed to parse XLSX file %s: %s", filename, exc, exc_info=True)
+            raise HTTPException(400, f"Failed to parse XLSX file: {exc}")
+
+    elif lower_name.endswith(".csv"):
+        try:
+            text = file_bytes.decode("utf-8-sig")  # handles BOM
+        except UnicodeDecodeError:
+            try:
+                text = file_bytes.decode("latin-1")
+            except UnicodeDecodeError:
+                raise HTTPException(400, "CSV file encoding not recognised. Please re-export as UTF-8.")
+
+        reader = csv.reader(io.StringIO(text))
+        try:
+            header_row = next(reader)
+        except StopIteration:
+            raise HTTPException(400, "CSV file is empty")
+
+        col_map = _normalise_headers(header_row)
+        if not col_map:
+            raise HTTPException(
+                400,
+                f"Could not recognise any LinkedIn columns in CSV headers: {header_row}. "
+                "Expected columns like: Post title, Post link, Impressions, Reactions, Comments, Reposts, Saves.",
+            )
+
+        for row_idx, data_row in enumerate(reader, start=2):
+            record: dict[str, str | int | float] = {}
+            for col_idx, key in col_map.items():
+                if col_idx < len(data_row):
+                    cell_val = data_row[col_idx]
+                    if key in ("impressions", "likes", "comments", "reposts", "saves"):
+                        record[key] = _safe_int(cell_val)
+                    elif key == "engagement_rate":
+                        record[key] = _safe_float(cell_val)
+                    else:
+                        record[key] = cell_val.strip()
+            record["_source_row"] = row_idx
+            rows.append(record)
+    else:
+        raise HTTPException(400, f"Unsupported file type: {filename}. Upload a .csv or .xlsx file.")
+
+    if not rows:
+        raise HTTPException(400, "File parsed but contained no data rows")
+
+    return rows
+
+
+@app.post("/posts/import-metrics")
+async def import_metrics(file: UploadFile = File(...)):
+    """Import metrics from a LinkedIn Creator Analytics XLSX export.
+
+    Parses all 5 sheets: DISCOVERY, ENGAGEMENT, TOP POSTS, FOLLOWERS, DEMOGRAPHICS.
+    Auto-creates posts for URLs not already in DB.
+    """
+    if not file.filename:
+        raise HTTPException(400, "No file provided")
+
+    file_bytes = await file.read()
+    if len(file_bytes) == 0:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    if len(file_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large. Maximum size is 10 MB.")
+
+    from backend.importer import import_linkedin_xlsx
+
+    lower_name = (file.filename or "").lower()
+    if not lower_name.endswith((".xlsx", ".xls")):
+        raise HTTPException(400, "Please upload a .xlsx file from LinkedIn Creator Analytics export.")
+
+    try:
+        result = import_linkedin_xlsx(file_bytes)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Metrics import failed: %s", e, exc_info=True)
+        raise HTTPException(500, f"Import failed: {e}")
+
+    logger.info("LinkedIn analytics import complete: %s", result)
+
+    # Auto-trigger strategy review after import (background, non-blocking)
+    import asyncio
+    from backend.strategist import run_strategy_review
+
+    async def _run_review() -> None:
+        try:
+            review_result = await run_strategy_review()
+            logger.info("Auto strategy review: %s", review_result.get("review", {}).get("health_score", "skipped"))
+        except Exception as e:
+            logger.warning("Auto strategy review failed (non-blocking): %s", e)
+
+    asyncio.ensure_future(_run_review())
+
+    return result
+
+
+@app.get("/strategy/review")
+async def get_strategy_review():
+    """Get the latest strategy review."""
+    from backend.strategist import get_latest_review
+
+    review = get_latest_review()
+    if not review:
+        return {"review": None, "message": "No strategy review yet. Import metrics to trigger one."}
+    return review
+
+
+@app.post("/strategy/review")
+async def trigger_strategy_review():
+    """Manually trigger a strategy review — runs in background."""
+    from backend.strategist import run_strategy_review
+
+    task_id = create_task("strategy_review", run_strategy_review())
+    return {"task_id": task_id, "status": "running"}
 
 
 # ── Entrypoint ───────────────────────────────────────────────────

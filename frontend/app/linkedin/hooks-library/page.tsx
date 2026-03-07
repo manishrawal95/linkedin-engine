@@ -33,7 +33,7 @@ const HooksLibraryPage = memo(function HooksLibraryPage() {
   const [loading, setLoading] = useState(true);
 
   const fetchHooks = useCallback(async () => {
-    const params = filterStyle ? `?style=${filterStyle}` : "";
+    const params = filterStyle ? `?style=${filterStyle.toLowerCase()}` : "";
     try {
       const res = await fetch(`/api/linkedin/hooks${params}`);
       const data = await res.json();
@@ -52,7 +52,7 @@ const HooksLibraryPage = memo(function HooksLibraryPage() {
     await fetch("/api/linkedin/hooks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
+      body: JSON.stringify({ ...form, style: form.style.toLowerCase() }),
     });
     setShowForm(false);
     setForm({ text: "", style: "Statement" });
@@ -111,7 +111,7 @@ const HooksLibraryPage = memo(function HooksLibraryPage() {
       </div>
 
       {/* Filter by style */}
-      <div className="flex gap-2 flex-wrap bg-white rounded-2xl border border-stone-200/60 px-4 py-3">
+      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide">
         <button
           onClick={() => setFilterStyle("")}
           className={`px-3 py-1.5 text-xs font-medium rounded-xl transition-all ${

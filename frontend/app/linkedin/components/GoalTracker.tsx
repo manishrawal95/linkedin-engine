@@ -63,23 +63,34 @@ const GoalTracker = memo(function GoalTracker() {
   return (
     <div className="space-y-3">
       {goals.map((goal) => {
-        const progress = Math.min(
-          100,
-          (goal.current_value / goal.target_value) * 100
-        );
+        const progress = goal.target_value > 0
+          ? Math.min(100, (goal.current_value / goal.target_value) * 100)
+          : 0;
         const isAchieved = goal.status === "achieved";
+        const fmt = (v: number) => {
+          if (v >= 1000) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+          if (v >= 1) return v.toLocaleString(undefined, { maximumFractionDigits: 1 });
+          return (v * 100).toFixed(2) + "%";
+        };
         return (
           <div
             key={goal.id}
             className={`p-3 rounded-xl border ${isAchieved ? "bg-emerald-50/50 border-emerald-200/60" : "bg-stone-50 border-stone-200/60"}`}
           >
             <div className="flex justify-between items-center mb-2">
-              <span className="text-sm font-medium text-stone-900 capitalize">
-                {goal.metric}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-stone-900 capitalize">
+                  {goal.metric}
+                </span>
+                {goal.source === "auto" && (
+                  <span className="text-[10px] text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded">
+                    auto
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-stone-500">
-                  {goal.current_value} / {goal.target_value}
+                  {fmt(goal.current_value)} / {fmt(goal.target_value)}
                 </span>
                 {!isAchieved && (
                   <Button

@@ -2,10 +2,9 @@
 Learning engine — classifies post performance, extracts learnings, generates playbook.
 
 Flow:
-  1. classify_performance(post, metrics) → "hit"/"average"/"miss"
-  2. extract_learnings(post, metrics, classification) → [insights]
-  3. update_learnings(new_insights) → merge/insert into DB
-  4. check_playbook_staleness() → regenerate if needed
+  1. classify_and_extract(post, metrics) → (classification, [insights])
+  2. update_learnings(new_insights) → merge/insert into DB
+  3. check_playbook_staleness() → regenerate if needed
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ VALID_IMPACTS = {"positive", "negative", "context-dependent"}
 
 
 async def analyze_post(post_id: int) -> dict:
-    """Full analysis pipeline for a post after metrics are entered."""
+    """Full analysis pipeline — single LLM call for classify + extract."""
     conn = get_conn()
 
     post = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
@@ -40,12 +39,10 @@ async def analyze_post(post_id: int) -> dict:
     if not latest_metrics:
         raise ValueError(f"No metrics found for post {post_id}")
 
-    classification = await classify_performance(dict(post), dict(latest_metrics))
-
-    new_learnings = await extract_learnings(dict(post), dict(latest_metrics), classification)
+    post_dict, metrics_dict = dict(post), dict(latest_metrics)
+    classification, new_learnings = await classify_and_extract(post_dict, metrics_dict)
 
     # Only delete previous learnings AFTER new ones are successfully extracted
-    # to prevent data loss if the LLM call fails
     if new_learnings:
         conn.execute("DELETE FROM learnings WHERE post_id = ?", (post_id,))
         conn.commit()
@@ -98,14 +95,9 @@ def _percentile(value: float, sorted_data: list[float]) -> int:
 def _compute_baseline(author: str, conn) -> dict:
     """Compute author's baseline using the latest snapshot per post only."""
     rows = conn.execute("""
-        SELECT ms.impressions, ms.saves, ms.likes, ms.engagement_score
-        FROM metrics_snapshots ms
-        INNER JOIN (
-            SELECT post_id, MAX(snapshot_at) AS max_at
-            FROM metrics_snapshots
-            GROUP BY post_id
-        ) latest ON ms.post_id = latest.post_id AND ms.snapshot_at = latest.max_at
-        JOIN posts p ON p.id = ms.post_id
+        SELECT lm.impressions, lm.saves, lm.likes, lm.engagement_score
+        FROM latest_metrics lm
+        JOIN posts p ON p.id = lm.post_id
         WHERE p.author = ?
     """, (author,)).fetchall()
 
@@ -146,14 +138,14 @@ def _compute_trajectory(post_id: int, conn) -> str:
     return "stable"
 
 
-async def classify_performance(post: dict, metrics: dict) -> str:
-    """Classify post as hit/average/miss using percentile signals across impressions, saves, likes, rate."""
+async def classify_and_extract(post: dict, metrics: dict) -> tuple[str, list[dict]]:
+    """Single LLM call: classify + extract learnings. Returns (classification, learnings)."""
     conn = get_conn()
     author = post.get("author", "me")
     baseline = _compute_baseline(author, conn)
 
     if baseline["total_posts"] < 3:
-        return "average"
+        return "average", []
 
     impressions = metrics.get("impressions", 0) or 0
     saves = metrics.get("saves", 0) or 0
@@ -171,11 +163,20 @@ async def classify_performance(post: dict, metrics: dict) -> str:
         else "NO"
     )
     trajectory = _compute_trajectory(post.get("id", 0), conn)
+    similar_posts = _find_similar_posts(post, conn)
 
-    prompt_text = prompts.CLASSIFY_PERFORMANCE.format(
-        content=post.get("content", "")[:500],
+    existing = conn.execute(
+        "SELECT insight, category, impact FROM learnings ORDER BY times_confirmed DESC, confidence DESC"
+    ).fetchall()
+    existing_text = "\n".join(
+        f"- [{r['category']}] {r['insight']} ({r['impact']})" for r in existing
+    ) or "None yet"
+
+    prompt_text = prompts.CLASSIFY_AND_EXTRACT.format(
+        content=post.get("content", "")[:1000],
         post_type=post.get("post_type", "text"),
         hook_style=post.get("hook_style") or "N/A",
+        hook_line=post.get("hook_line") or "N/A",
         cta_type=post.get("cta_type", "none"),
         word_count=post.get("word_count", 0),
         pillar_name=_resolve_pillar_name(conn, post.get("pillar_id")),
@@ -191,28 +192,63 @@ async def classify_performance(post: dict, metrics: dict) -> str:
         rate_pct=rate_pct,
         viral_flag=viral_flag,
         trajectory=trajectory,
+        similar_posts=similar_posts,
+        existing_learnings=existing_text,
     )
 
-    result = (await generate(prompt_text, system=prompts.SYSTEM_ANALYST)).strip()
+    result = await generate(prompt_text, system=prompts.SYSTEM_ANALYST)
 
-    # Parse "classification|reason" format
-    if "|" in result:
-        cls = result.split("|")[0].strip().lower()
-        if cls in ("hit", "average", "miss"):
-            return cls
+    # Parse combined response
+    try:
+        from backend.utils import parse_llm_json
+        parsed = parse_llm_json(result)
+        classification = parsed.get("classification", "").strip().lower()
+        if classification not in ("hit", "average", "miss"):
+            classification = _fallback_classification(rate_pct, impressions_pct, saves_pct)
+        learnings = parsed.get("learnings", [])
+        if not isinstance(learnings, list):
+            learnings = [learnings]
+        return classification, learnings
+    except (json.JSONDecodeError, IndexError, ValueError, AttributeError):
+        logger.warning("Failed to parse combined classify+extract: %s", result[:200])
+        classification = _fallback_classification(rate_pct, impressions_pct, saves_pct)
+        return classification, []
 
-    # Bare word fallback
-    result_lower = result.lower()
-    for label in ("hit", "miss", "average"):
-        if result_lower.startswith(label):
-            return label
 
-    # Percentile-based fallback
+def _fallback_classification(rate_pct: int, impressions_pct: int, saves_pct: int) -> str:
+    """Percentile-based fallback when LLM parsing fails."""
     if rate_pct >= 70 or (impressions_pct >= 70 and saves_pct >= 60):
         return "hit"
     elif rate_pct <= 30 and impressions_pct <= 30 and saves_pct <= 30:
         return "miss"
     return "average"
+
+
+def _sync_competitor_stats(conn) -> None:
+    """Update competitor_profiles aggregate stats from their posts."""
+    try:
+        competitors = conn.execute("SELECT id, name FROM competitor_profiles").fetchall()
+        for comp in competitors:
+            stats = conn.execute("""
+                SELECT COUNT(p.id) as post_count,
+                       AVG(lm.impressions) as avg_impressions,
+                       AVG(lm.engagement_score) as avg_engagement_score
+                FROM posts p
+                LEFT JOIN latest_metrics lm ON p.id = lm.post_id
+                WHERE LOWER(p.author) = LOWER(?)
+            """, (comp["name"],)).fetchone()
+            if stats and stats["post_count"]:
+                conn.execute(
+                    """UPDATE competitor_profiles
+                       SET post_count = ?, avg_impressions = ?, avg_engagement_score = ?
+                       WHERE id = ?""",
+                    (stats["post_count"],
+                     stats["avg_impressions"] or 0,
+                     stats["avg_engagement_score"] or 0,
+                     comp["id"]),
+                )
+    except Exception as e:
+        logger.warning("Failed to sync competitor stats: %s", e)
 
 
 def _find_similar_posts(post: dict, conn, limit: int = 3) -> str:
@@ -223,15 +259,12 @@ def _find_similar_posts(post: dict, conn, limit: int = 3) -> str:
 
     rows = conn.execute("""
         SELECT p.id, p.content, p.hook_style, p.post_type, p.classification,
-               ms.impressions, ms.saves, ms.engagement_score
+               lm.impressions, lm.saves, lm.engagement_score
         FROM posts p
-        INNER JOIN (
-            SELECT post_id, MAX(snapshot_at) AS max_at FROM metrics_snapshots GROUP BY post_id
-        ) latest ON p.id = latest.post_id
-        JOIN metrics_snapshots ms ON ms.post_id = p.id AND ms.snapshot_at = latest.max_at
+        JOIN latest_metrics lm ON p.id = lm.post_id
         WHERE p.id != ? AND p.author = ?
           AND (p.pillar_id = ? OR p.hook_style = ?)
-        ORDER BY ms.saves DESC, ms.impressions DESC
+        ORDER BY lm.saves DESC, lm.impressions DESC
         LIMIT ?
     """, (post_id, post.get("author", "me"), pillar_id, hook_style, limit)).fetchall()
 
@@ -251,67 +284,6 @@ def _find_similar_posts(post: dict, conn, limit: int = 3) -> str:
     return "\n".join(blocks)
 
 
-async def extract_learnings(post: dict, metrics: dict, classification: str) -> list[dict]:
-    """Use LLM to extract transferable learnings from a post's performance."""
-    conn = get_conn()
-    author = post.get("author", "me")
-    baseline = _compute_baseline(author, conn)
-
-    impressions = metrics.get("impressions", 0) or 0
-    saves = metrics.get("saves", 0) or 0
-    likes = metrics.get("likes", 0) or 0
-    rate = metrics.get("engagement_score", 0) or 0
-
-    impressions_pct = _percentile(impressions, baseline["impressions_list"])
-    saves_pct = _percentile(saves, baseline["saves_list"])
-    likes_pct = _percentile(likes, baseline["likes_list"])
-    rate_pct = _percentile(rate, baseline["rates_list"])
-
-    viral_flag = (
-        "YES"
-        if baseline["median_impressions"] > 0 and impressions > baseline["median_impressions"] * 3
-        else "NO"
-    )
-
-    similar_posts = _find_similar_posts(post, conn)
-
-    existing = conn.execute(
-        "SELECT insight, category, impact FROM learnings ORDER BY times_confirmed DESC, confidence DESC"
-    ).fetchall()
-    existing_text = "\n".join(
-        f"- [{r['category']}] {r['insight']} ({r['impact']})" for r in existing
-    ) or "None yet"
-
-    prompt_text = prompts.EXTRACT_LEARNINGS.format(
-        content=post.get("content", "")[:1000],
-        post_type=post.get("post_type", "text"),
-        hook_style=post.get("hook_style") or "N/A",
-        hook_line=post.get("hook_line") or "N/A",
-        cta_type=post.get("cta_type", "none"),
-        word_count=post.get("word_count", 0),
-        impressions_pct=impressions_pct,
-        saves_pct=saves_pct,
-        likes_pct=likes_pct,
-        rate_pct=rate_pct,
-        comments=metrics.get("comments", 0) or 0,
-        viral_flag=viral_flag,
-        classification=classification,
-        similar_posts=similar_posts,
-        existing_learnings=existing_text,
-    )
-
-    result = await generate(prompt_text, system=prompts.SYSTEM_ANALYST)
-
-    try:
-        from backend.utils import parse_llm_json
-        learnings = parse_llm_json(result)
-        if not isinstance(learnings, list):
-            learnings = [learnings]
-        return learnings
-    except (json.JSONDecodeError, IndexError, ValueError):
-        logger.warning("Failed to parse LLM learnings response: %s", result[:200],
-                        extra={"action": "Check LLM prompt format in prompts.EXTRACT_LEARNINGS."})
-        return []
 
 
 async def analyze_batch(post_ids: list[int], force: bool = False) -> dict:
@@ -409,12 +381,8 @@ async def analyze_batch(post_ids: list[int], force: bool = False) -> dict:
         classifications.update(llm_cls)
 
     # --- BATCH LEARNINGS EXTRACTION (1 LLM call) ---
-    existing = conn.execute(
-        "SELECT insight, category, impact FROM learnings ORDER BY times_confirmed DESC, confidence DESC"
-    ).fetchall()
-    existing_text = "\n".join(
-        f"- [{r['category']}] {r['insight']} ({r['impact']})" for r in existing
-    ) or "None yet"
+    from backend.context import _format_learnings
+    existing_text = _format_learnings() or "None yet"
 
     post_blocks_learn = []
     for pm in posts_with_metrics:
@@ -500,6 +468,9 @@ async def analyze_batch(post_ids: list[int], force: bool = False) -> dict:
             "learnings_extracted": len(post_learnings),
             "learnings_saved": saved,
         })
+
+    # Sync competitor_profiles stats from analyzed posts
+    _sync_competitor_stats(conn)
 
     conn.commit()
     playbook_updated = check_and_regenerate_playbook()
@@ -673,12 +644,8 @@ def check_and_regenerate_playbook(force: bool = False) -> bool:
         if existing_playbook and existing_playbook["learnings_hash"] == current_hash:
             return False
 
-    import asyncio
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        asyncio.create_task(_regenerate_playbook(learnings, current_hash))
-    else:
-        loop.run_until_complete(_regenerate_playbook(learnings, current_hash))
+    from backend.tasks import create_task
+    create_task("playbook_regen", _regenerate_playbook(learnings, current_hash))
     return True
 
 

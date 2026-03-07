@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import type { Pillar, MoodBoardItem } from "@/types/linkedin";
 
-const ITEM_TYPES = ["note", "idea", "quote", "link", "saved_post"];
+const ITEM_TYPES = ["note", "idea", "quote", "link", "saved post"];
 
 const TYPE_STYLES: Record<string, string> = {
   note: "bg-blue-50 text-blue-700 border-blue-200/60",
@@ -449,7 +449,7 @@ const MoodBoardPage = memo(function MoodBoardPage() {
                         <SelectContent>
                           {ITEM_TYPES.map((t) => (
                             <SelectItem key={t} value={t}>
-                              {t}
+                              {t.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -496,7 +496,7 @@ const MoodBoardPage = memo(function MoodBoardPage() {
                             </SelectTrigger>
                             <SelectContent>
                               {ITEM_TYPES.map((t) => (
-                                <SelectItem key={t} value={t}>{t}</SelectItem>
+                                <SelectItem key={t} value={t}>{t.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
@@ -524,7 +524,7 @@ const MoodBoardPage = memo(function MoodBoardPage() {
                                 variant="outline"
                                 className={`text-[10px] uppercase font-semibold ${TYPE_STYLES[item.type] || "bg-stone-50 text-stone-600"}`}
                               >
-                                {item.type}
+                                {item.type.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}
                               </Badge>
                               {draftedIds.has(item.id) && (
                                 <Badge

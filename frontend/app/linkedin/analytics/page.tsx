@@ -591,14 +591,6 @@ function PostRow({
   rank: number;
   variant: "top" | "bottom";
 }) {
-  const suggestions: Record<string, string> = {
-    text: "Try adding a carousel or image to boost visibility",
-    carousel: "Consider a stronger hook or more actionable CTA",
-    poll: "Engage in comments early to boost algorithm reach",
-    video: "Try shorter, punchier videos under 90 seconds",
-    article: "Break into a multi-part series for better engagement",
-  };
-
   return (
     <Link
       href={`/linkedin/posts/${post.id}`}
@@ -639,13 +631,6 @@ function PostRow({
               {pct(post.engagement_score)} eng
             </span>
           </div>
-          {variant === "bottom" && (
-            <p className="mt-2 text-[11px] text-amber-600 bg-amber-50 rounded-md px-2 py-1 border border-amber-100">
-              <Lightbulb className="w-3 h-3 inline mr-1 -mt-0.5" />
-              {suggestions[post.post_type] ||
-                "Experiment with different hooks and post formats"}
-            </p>
-          )}
         </div>
       </div>
     </Link>

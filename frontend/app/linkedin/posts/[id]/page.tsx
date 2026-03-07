@@ -14,7 +14,7 @@ import {
   Users,
   Clock,
   BarChart3,
-  Sparkles,
+  Search as SearchIcon,
   ExternalLink,
   Copy,
   Check,
@@ -197,7 +197,7 @@ export default function PostDetailPage() {
     .reverse()
     .map((m) => ({
       date: formatElapsed(m.snapshot_at, post?.posted_at ?? null) ??
-        new Date(m.snapshot_at + "Z").toLocaleDateString("en-US", {
+        new Date(/[Zz]|[+-]\d{2}:\d{2}$/.test(m.snapshot_at) ? m.snapshot_at : m.snapshot_at + "Z").toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
         }),
@@ -402,7 +402,7 @@ export default function PostDetailPage() {
           variant="secondary"
           className="rounded-xl active:scale-[0.98] transition-all"
         >
-          <Sparkles className="w-4 h-4" />
+          <SearchIcon className="w-4 h-4" />
           {analyzing ? "Analyzing..." : "Analyze with AI"}
         </Button>
 
@@ -631,7 +631,7 @@ export default function PostDetailPage() {
                         )}
                       </td>
                       <td className="py-2.5 px-2 text-xs text-stone-500">
-                        {new Date(m.snapshot_at + "Z").toLocaleDateString("en-US", {
+                        {new Date(/[Zz]|[+-]\d{2}:\d{2}$/.test(m.snapshot_at) ? m.snapshot_at : m.snapshot_at + "Z").toLocaleDateString("en-US", {
                           month: "short",
                           day: "numeric",
                           hour: "numeric",
@@ -726,23 +726,9 @@ export default function PostDetailPage() {
                   )}
                 </div>
 
-                {/* Confidence bar */}
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-stone-500 shrink-0 w-16">
-                    Confidence
-                  </span>
-                  <div className="flex-1 bg-stone-200 rounded-full h-1.5">
-                    <div
-                      className="h-1.5 rounded-full bg-gradient-to-r from-stone-500 to-stone-400 transition-all"
-                      style={{
-                        width: `${Math.min(100, learning.confidence * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="text-xs font-semibold text-stone-600 shrink-0">
-                    {(learning.confidence * 100).toFixed(0)}%
-                  </span>
-                </div>
+                <span className="text-xs text-stone-800">
+                  {(learning.confidence * 100).toFixed(0)}% Confidence
+                </span>
               </div>
             ))}
           </div>

@@ -16,6 +16,9 @@ import {
   Users,
   Layers,
   Menu,
+  Brain,
+  Lightbulb,
+  User,
 } from "lucide-react";
 import {
   Sheet,
@@ -53,6 +56,9 @@ const NAV_SECTIONS = [
   {
     label: "Intelligence",
     items: [
+      { href: "/linkedin/profile", label: "Profile", icon: User },
+      { href: "/linkedin/ideas", label: "Ideas", icon: Lightbulb },
+      { href: "/linkedin/memory", label: "Memory", icon: Brain },
       { href: "/linkedin/competitors", label: "Competitors", icon: Users },
     ],
   },

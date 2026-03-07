@@ -1,12 +1,13 @@
 "use client";
 
-import { memo, useEffect, useState, useCallback } from "react";
+import { memo, useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
-import { Plus, Filter, FileText, Search, ArrowUpDown, Sparkles } from "lucide-react";
+import { Plus, Filter, FileText, Search, ArrowUpDown, BarChart3, Upload } from "lucide-react";
 import PostForm from "../components/PostForm";
 import PostCard from "../components/PostCard";
 import MetricsForm from "../components/MetricsForm";
 import { useToast } from "../components/Toast";
+import { useBackgroundTask } from "@/hooks/use-background-task";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { Post, Pillar, Metrics } from "@/types/linkedin";
@@ -29,8 +30,8 @@ const PostsPage = memo(function PostsPage() {
   const [filterClassification, setFilterClassification] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [sortBy, setSortBy] = useState<string>("date");
-  const [analyzing, setAnalyzing] = useState<number | null>(null);
-  const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
 
   const fetchPosts = useCallback(async () => {
     const params = new URLSearchParams();
@@ -71,6 +72,18 @@ const PostsPage = memo(function PostsPage() {
     fetchPosts();
     fetchPillars();
   }, [fetchPosts, fetchPillars]);
+
+  const { running: analyzing, launch: launchAnalyze } = useBackgroundTask({
+    key: "post_analyze",
+    onDone: () => fetchPosts(),
+    successMessage: "Post analysis complete",
+  });
+
+  const { running: batchAnalyzing, launch: launchBatchAnalyze } = useBackgroundTask({
+    key: "batch_analyze",
+    onDone: () => fetchPosts(),
+    successMessage: "Batch analysis complete",
+  });
 
   const handleCreatePost = async (data: Record<string, unknown>) => {
     const res = await fetch("/api/linkedin/posts", {
@@ -127,56 +140,89 @@ const PostsPage = memo(function PostsPage() {
     toast.success("Metrics saved — AI analysis running in background.");
   };
 
-  const handleAnalyze = async (postId: number) => {
-    setAnalyzing(postId);
-    try {
-      const res = await fetch(`/api/linkedin/analyze/${postId}`, { method: "POST" });
-      const data = await res.json();
-      const cls = data.classification ? ` · ${data.classification}` : "";
-      toast.success(`Analysis complete${cls} — ${data.learnings_extracted} learnings extracted.`);
-      fetchPosts();
-    } catch (err) {
-      console.error("PostsPage.handleAnalyze: POST /api/linkedin/analyze/:id failed:", err);
-      toast.error("Analysis failed. Make sure the post has metrics.");
-    } finally {
-      setAnalyzing(null);
-    }
-  };
+  const handleAnalyze = useCallback((postId: number) => {
+    launchAnalyze(
+      `/api/linkedin/analyze/${postId}`,
+      { method: "POST" },
+      "Analyzing post — you can navigate away safely"
+    );
+  }, [launchAnalyze]);
 
-  const handleBatchAnalyze = async () => {
-    const postIds = posts.map((p) => p.id);
-    if (postIds.length === 0) return;
-    if (!confirm(`Analyze all ${postIds.length} posts with AI? This uses batch processing to minimize API calls.`)) return;
-    setBatchAnalyzing(true);
-    try {
-      const res = await fetch("/api/linkedin/analyze/batch?force=true", {
+  const handleBatchAnalyze = useCallback(() => {
+    if (posts.length === 0) return;
+    launchBatchAnalyze(
+      "/api/linkedin/analyze/batch?force=true",
+      {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(postIds),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Batch analysis failed");
-      }
-      const data = await res.json();
-      const results = data.results || [];
-      const skipped = data.skipped || [];
-      const hits = results.filter((r: { classification: string }) => r.classification === "hit").length;
-      const misses = results.filter((r: { classification: string }) => r.classification === "miss").length;
-      const avg = results.filter((r: { classification: string }) => r.classification === "average").length;
-      const totalLearnings = results.reduce((sum: number, r: { learnings_extracted: number }) => sum + r.learnings_extracted, 0);
-      const alreadyAnalyzed = skipped.filter((s: { reason: string }) => s.reason?.includes("Already analyzed")).length;
-      const noMetrics = skipped.length - alreadyAnalyzed;
-      const summary = `${results.length} analyzed · ${hits} hits · ${avg} avg · ${misses} misses · ${totalLearnings} learnings${alreadyAnalyzed ? ` · ${alreadyAnalyzed} skipped` : ""}${noMetrics ? ` · ${noMetrics} no metrics` : ""}`;
-      toast.success(`Batch analysis complete — ${summary}`);
-      fetchPosts();
-    } catch (err) {
-      console.error("PostsPage.handleBatchAnalyze: POST /api/linkedin/analyze/batch failed:", err);
-      toast.error("Batch analysis failed. Make sure your posts have metrics.");
-    } finally {
-      setBatchAnalyzing(false);
+        body: JSON.stringify(posts.map((p) => p.id)),
+      },
+      `Analyzing ${posts.length} posts — you can navigate away safely`
+    );
+  }, [posts, launchBatchAnalyze]);
+
+  const handleImportMetrics = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Reset input so the same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    const allowedTypes = [".csv", ".xlsx", ".xls"];
+    const ext = file.name.toLowerCase().slice(file.name.lastIndexOf("."));
+    if (!allowedTypes.includes(ext)) {
+      toast.error(`Unsupported file type: ${ext}. Please upload a .csv or .xlsx file.`);
+      return;
     }
-  };
+
+    setImporting(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/linkedin/posts/import-metrics", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+        const detail = typeof err.detail === "string" ? err.detail : JSON.stringify(err.detail);
+        toast.error(`Import failed: ${detail}`);
+        return;
+      }
+
+      const data = await res.json();
+      const sheets = (data.sheets_processed as string[]) ?? [];
+      const topPosts = data.top_posts as { matched?: number; created?: number; total_posts?: number } | undefined;
+      const engagement = data.engagement as { days?: number } | undefined;
+      const followers = data.followers as { total_followers?: number; days?: number } | undefined;
+      const demographics = data.demographics as { entries?: number } | undefined;
+
+      const parts: string[] = [];
+      if (topPosts?.total_posts) {
+        parts.push(`${topPosts.total_posts} posts (${topPosts.matched ?? 0} matched, ${topPosts.created ?? 0} new)`);
+      }
+      if (engagement?.days) parts.push(`${engagement.days} days of engagement`);
+      if (followers?.total_followers) parts.push(`${followers.total_followers} followers`);
+      if (demographics?.entries) parts.push(`${demographics.entries} demographics`);
+
+      if (parts.length > 0) {
+        toast.success(`Imported: ${parts.join(", ")}`);
+        fetchPosts();
+      } else if (sheets.length === 0) {
+        toast.error("No recognized sheets found. Upload a LinkedIn Creator Analytics .xlsx export.");
+      } else {
+        toast.success(`Import complete: ${sheets.length} sheets processed`);
+        fetchPosts();
+      }
+    } catch (err) {
+      console.error("PostsPage.handleImportMetrics: POST /api/linkedin/posts/import-metrics failed:", err);
+      toast.error("Failed to import metrics. Is the backend running?");
+    } finally {
+      setImporting(false);
+    }
+  }, [toast, fetchPosts]);
 
   const handleDelete = async (postId: number) => {
     if (!confirm("Delete this post?")) return;
@@ -228,14 +274,31 @@ const PostsPage = memo(function PostsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={handleImportMetrics}
+            className="hidden"
+            aria-label="Import metrics file"
+          />
+          <Button
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="gap-2 rounded-xl border-stone-200"
+          >
+            <Upload className="w-4 h-4" />
+            <span className="hidden sm:inline">Import Metrics</span>
+          </Button>
           <Button
             variant="outline"
             onClick={handleBatchAnalyze}
             disabled={batchAnalyzing || posts.length === 0}
             className="gap-2 rounded-xl border-stone-200"
           >
-            <Sparkles className="w-4 h-4" />
-            Analyze All
+            <BarChart3 className="w-4 h-4" />
+            <span className="hidden sm:inline">Analyze All</span>
           </Button>
           <Button onClick={() => setShowForm(true)} className="gap-2 rounded-xl active:scale-[0.98] transition-all">
             <Plus className="w-4 h-4" />
@@ -297,28 +360,6 @@ const PostsPage = memo(function PostsPage() {
       </div>
 
       {showForm && <PostForm pillars={pillars} onSubmit={handleCreatePost} onCancel={() => setShowForm(false)} />}
-      {editingPost && (
-        <PostForm
-          pillars={pillars}
-          onSubmit={handleUpdatePost}
-          onCancel={() => setEditingPost(null)}
-          initial={{
-            author: editingPost.author,
-            content: editingPost.content,
-            post_url: editingPost.post_url || "",
-            post_type: editingPost.post_type,
-            cta_type: editingPost.cta_type,
-            hook_line: editingPost.hook_line || "",
-            hook_style: editingPost.hook_style || "",
-            posted_at: editingPost.posted_at || "",
-            pillar_id: editingPost.pillar_id,
-            topic_tags: (() => { try { return JSON.parse(editingPost.topic_tags || "[]").join(", "); } catch { return ""; } })(),
-          }}
-        />
-      )}
-      {metricsPostId && (
-        <MetricsForm postId={metricsPostId} author={metricsPostAuthor} onSubmit={handleAddMetrics} onCancel={() => setMetricsPostId(null)} />
-      )}
 
       {/* Post List */}
       <div className="space-y-4">
@@ -344,31 +385,62 @@ const PostsPage = memo(function PostsPage() {
           </div>
         ) : (
           filteredPosts.map((post) => (
-            <div key={post.id} className="relative group/link">
-              <Link href={`/linkedin/posts/${post.id}`} className="absolute inset-0 z-0" aria-label={`View post #${post.id} details`} />
-              <div className="relative z-10 pointer-events-none [&_button]:pointer-events-auto [&_a]:pointer-events-auto">
-                <PostCard
-                  post={post}
-                  pillarName={post.pillar_id ? pillarMap[post.pillar_id]?.name : undefined}
-                  pillarColor={post.pillar_id ? pillarMap[post.pillar_id]?.color : undefined}
-                  latestMetrics={metricsMap[post.id] || null}
-                  onAddMetrics={(id) => { setMetricsPostId(id); setMetricsPostAuthor(post.author); }}
-                  onAnalyze={handleAnalyze}
-                  onEdit={handleEditPost}
-                  onDelete={handleDelete}
+            <div key={post.id}>
+              {editingPost?.id === post.id ? (
+                <PostForm
+                  pillars={pillars}
+                  onSubmit={handleUpdatePost}
+                  onCancel={() => setEditingPost(null)}
+                  initial={{
+                    author: editingPost.author,
+                    content: editingPost.content,
+                    post_url: editingPost.post_url || "",
+                    post_type: editingPost.post_type,
+                    cta_type: editingPost.cta_type,
+                    hook_line: editingPost.hook_line || "",
+                    hook_style: editingPost.hook_style || "",
+                    posted_at: editingPost.posted_at || "",
+                    pillar_id: editingPost.pillar_id,
+                    topic_tags: (() => { try { return JSON.parse(editingPost.topic_tags || "[]").join(", "); } catch { return ""; } })(),
+                  }}
                 />
-              </div>
+              ) : (
+                <>
+                  <div className="relative group/link">
+                    <Link href={`/linkedin/posts/${post.id}`} className="absolute inset-0 z-0" aria-label={`View post #${post.id} details`} />
+                    <div className="relative z-10 pointer-events-none [&_button]:pointer-events-auto [&_a]:pointer-events-auto">
+                      <PostCard
+                        post={post}
+                        pillarName={post.pillar_id ? pillarMap[post.pillar_id]?.name : undefined}
+                        pillarColor={post.pillar_id ? pillarMap[post.pillar_id]?.color : undefined}
+                        latestMetrics={metricsMap[post.id] || null}
+                        onAddMetrics={(id) => { setMetricsPostId(id); setMetricsPostAuthor(post.author); }}
+                        onAnalyze={handleAnalyze}
+                        onEdit={handleEditPost}
+                        onDelete={handleDelete}
+                      />
+                    </div>
+                  </div>
+                  {metricsPostId === post.id && (
+                    <MetricsForm postId={metricsPostId} author={metricsPostAuthor} initialMetrics={metricsMap[post.id] ?? undefined} onSubmit={handleAddMetrics} onCancel={() => setMetricsPostId(null)} />
+                  )}
+                </>
+              )}
             </div>
           ))
         )}
       </div>
 
-      {(analyzing || batchAnalyzing) && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl p-6 flex items-center gap-3 shadow-xl">
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-stone-600" />
-            <span className="text-sm text-stone-700">
-              {batchAnalyzing ? "Batch analyzing all posts with AI..." : "Analyzing post with AI..."}
+      {(analyzing || batchAnalyzing || importing) && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50">
+          <div className="bg-stone-900 text-white rounded-xl px-5 py-3 flex items-center gap-3 shadow-2xl">
+            <div className="animate-spin rounded-full h-4 w-4 border-2 border-white/30 border-t-white" />
+            <span className="text-sm font-medium">
+              {importing
+                ? "Importing metrics..."
+                : batchAnalyzing
+                  ? `Analyzing ${posts.length} posts with AI...`
+                  : "Analyzing post..."}
             </span>
           </div>
         </div>

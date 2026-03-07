@@ -2,7 +2,7 @@
 
 import { memo, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { AlertCircle, Sparkles, Clock } from "lucide-react";
+import { AlertCircle, FileText, Clock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Actions } from "@/types/linkedin";
 
@@ -69,7 +69,7 @@ const ActionPanel = memo(function ActionPanel({ onAnalyze }: ActionPanelProps) {
           key={post.id}
           className="flex items-start gap-3 p-3 bg-stone-50 border border-stone-200/60 rounded-xl"
         >
-          <Sparkles className="w-4 h-4 text-stone-400 shrink-0 mt-0.5" />
+          <FileText className="w-4 h-4 text-stone-400 shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
             <p className="text-xs text-stone-600 truncate">{post.content_preview}</p>
           </div>

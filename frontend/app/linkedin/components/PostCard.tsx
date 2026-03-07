@@ -7,9 +7,10 @@ import {
   MessageCircle,
   Repeat2,
   BarChart3,
+  TrendingUp,
   ExternalLink,
   Trash2,
-  Sparkles,
+  Search,
   Pencil,
   Users,
   UserPlus,
@@ -34,8 +35,9 @@ interface PostCardProps {
 
 function formatElapsed(snapshotAt: string, postedAt: string | null): string | null {
   if (!postedAt) return null;
-  const ms = new Date(snapshotAt + "Z").getTime() - new Date(postedAt).getTime();
-  if (ms < 0) return null;
+  const toUTC = (s: string) => /[Zz]|[+-]\d{2}:\d{2}$/.test(s) ? new Date(s) : new Date(s + "Z");
+  const ms = toUTC(snapshotAt).getTime() - toUTC(postedAt).getTime();
+  if (isNaN(ms) || ms < 0) return null;
   const totalMins = Math.floor(ms / 60000);
   const days = Math.floor(totalMins / 1440);
   const hours = Math.floor((totalMins % 1440) / 60);
@@ -166,19 +168,13 @@ const PostCard = memo(function PostCard({
                   <MetricPill icon={Users} label="Profile Views" value={latestMetrics.profile_viewers} accent />
                 </div>
 
-                {/* Engagement score bar */}
-                <div className="mt-3 flex items-center gap-3">
-                  <span className="text-xs font-medium text-stone-500 shrink-0 w-28">Engagement</span>
-                  <div className="flex-1 bg-stone-100 rounded-full h-2">
-                    <div
-                      className="h-2 rounded-full bg-stone-600 transition-all"
-                      style={{ width: `${Math.min(100, latestMetrics.engagement_score * 100 * 10)}%` }}
-                    />
+                {latestMetrics.engagement_score > 0 && (
+                  <div className="flex items-center gap-1.5 text-xs text-stone-700 font-medium mt-2">
+                    <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                    <span className="font-semibold">{(latestMetrics.engagement_score * 100).toFixed(2)}%</span>
+                    <span className="text-stone-400 hidden sm:inline">Engagement</span>
                   </div>
-                  <span className="text-xs font-semibold text-stone-700 shrink-0">
-                    {(latestMetrics.engagement_score * 100).toFixed(2)}%
-                  </span>
-                </div>
+                )}
               </div>
             )}
 
@@ -208,7 +204,7 @@ const PostCard = memo(function PostCard({
               title="Analyze with AI"
               aria-label="Analyze with AI"
             >
-              <Sparkles className="w-4 h-4" />
+              <Search className="w-4 h-4" />
             </Button>
             <Button
               variant="ghost"

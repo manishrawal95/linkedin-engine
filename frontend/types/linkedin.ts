@@ -87,6 +87,7 @@ export interface Goal {
   current_value: number;
   deadline: string | null;
   status: string;
+  source: "auto" | "manual";
 }
 
 // ─── Hooks ───────────────────────────────────────────────────────────────────
@@ -325,4 +326,192 @@ export interface AnalyticsData {
   monthly_trend: MonthlyTrend[];
   top_posts: PostEntry[];
   bottom_posts: PostEntry[];
+}
+
+// ─── Creator Memory ─────────────────────────────────────────────
+
+export interface VoiceProfile {
+  tone?: {
+    formality?: number;
+    warmth?: number;
+    confidence?: number;
+    humor?: number;
+    vulnerability?: number;
+  };
+  structure?: {
+    paragraph_style?: string;
+    uses_line_breaks_for_emphasis?: boolean;
+    typical_post_structure?: string;
+  };
+  vocabulary?: {
+    signature_phrases?: string[];
+    power_words?: string[];
+    avoided_words?: string[];
+    transition_style?: string;
+  };
+  anti_patterns?: string[];
+  summary?: string;
+  error?: string;
+}
+
+export interface ContentDNA {
+  topic_performance?: Array<{
+    id: number;
+    name: string;
+    color: string;
+    post_count: number;
+    avg_engagement: number;
+    avg_impressions: number;
+    avg_saves: number;
+  }>;
+  format_performance?: Array<{
+    format: string;
+    post_count: number;
+    avg_engagement: number;
+    avg_comments: number;
+    avg_saves: number;
+  }>;
+  hook_performance?: Array<{
+    style: string;
+    count: number;
+    avg_engagement: number;
+    avg_impressions: number;
+  }>;
+  cta_performance?: Array<{
+    type: string;
+    count: number;
+    avg_engagement: number;
+    avg_comments: number;
+    avg_reposts: number;
+  }>;
+  length_sweet_spot?: {
+    optimal_range?: [number, number];
+    median?: number;
+    avg_engagement_in_range?: number;
+  };
+  best_timing?: Array<{
+    day: string;
+    hour: number;
+    avg_engagement: number;
+    post_count: number;
+  }>;
+}
+
+export interface AudienceModel {
+  inferred_segments?: Array<{
+    label: string;
+    evidence: string;
+    engagement_type: string;
+  }>;
+  engagement_triggers?: {
+    saves?: string;
+    comments?: string;
+    reposts?: string;
+    likes?: string;
+  };
+  content_gaps?: string[];
+  error?: string;
+}
+
+export interface GrowthTrajectory {
+  phases?: Array<{
+    period: string;
+    label: string;
+    avg_engagement: number;
+    key_event: string | null;
+  }>;
+  current_momentum?: {
+    trend: "accelerating" | "stable" | "declining";
+    recent_avg_engagement: number;
+  };
+  inflection_points?: Array<{
+    date: string;
+    change: string;
+    impact: string;
+  }>;
+  error?: string;
+}
+
+export interface CreatorMemory {
+  id: number;
+  voice_profile: VoiceProfile;
+  content_dna: ContentDNA;
+  audience_model: AudienceModel;
+  growth_trajectory: GrowthTrajectory;
+  version: number;
+  confidence_overall: number;
+  post_count_at_build: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ─── Ideas ──────────────────────────────────────────────────────
+
+// ─── Creator Profile ─────────────────────────────────────────────
+
+export interface CreatorProfile {
+  id: number | null;
+  about_me: string;
+  writing_skill: string;
+  condensed_context: string;
+  updated_at?: string;
+}
+
+export interface Idea {
+  id: number;
+  topic: string;
+  hook_style: string | null;
+  pillar_id: number | null;
+  pillar_name?: string | null;
+  pillar_color?: string | null;
+  source: string;
+  score: number;
+  fit_reason: string | null;
+  status: string;
+  draft_id: number | null;
+  batch_id: string | null;
+  created_at: string;
+}
+
+// ─── Strategy Review ─────────────────────────────────────────────
+
+export interface StrategyRecommendation {
+  priority: number;
+  action: string;
+  expected_impact: string;
+}
+
+export interface StrategyExperiment {
+  name: string;
+  hypothesis: string;
+  test: string;
+  duration: string;
+  success_metric: string;
+}
+
+export interface PillarVerdict {
+  pillar: string;
+  score: number;
+  verdict: "Invest" | "Maintain" | "Retire";
+  reason: string;
+}
+
+export interface StrategyReview {
+  health_score: number;
+  diagnosis: string;
+  whats_working: string[];
+  whats_not_working: string[];
+  hit_formula: string;
+  audience_depth_assessment: string;
+  recommendations: StrategyRecommendation[];
+  experiments: StrategyExperiment[];
+  pillar_verdicts: PillarVerdict[];
+}
+
+export interface StrategyReviewResponse {
+  health_score: number;
+  diagnosis: string;
+  review: StrategyReview;
+  metrics: Record<string, unknown>;
+  created_at: string;
 }

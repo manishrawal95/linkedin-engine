@@ -5,19 +5,17 @@ import {
   ChevronLeft,
   ChevronRight,
   Plus,
-  Sparkles,
   Trash2,
   CheckCircle,
   FileText,
   X,
-  CalendarDays,
+  Eye,
 } from "lucide-react";
 import type { CalendarEntry, Pillar, Draft, Series } from "@/types/linkedin";
 import { useToast } from "../components/Toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -35,16 +33,6 @@ const STATUS_COLORS: Record<string, string> = {
   skipped: "bg-red-50 border-red-200/60 text-red-400",
 };
 
-interface AISuggestion {
-  date?: string;
-  topic?: string;
-  title?: string;
-  pillar?: string;
-  notes?: string;
-  raw?: string;
-  [key: string]: unknown;
-}
-
 const selectClass =
   "w-full rounded-xl border border-stone-200 bg-white text-stone-700 text-sm h-9 px-3 outline-none focus:ring-2 focus:ring-stone-400/30 focus:border-stone-300 transition-colors";
 
@@ -59,9 +47,7 @@ const CalendarPage = memo(function CalendarPage() {
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [showAdd, setShowAdd] = useState<string | null>(null);
-  const [suggestions, setSuggestions] = useState<AISuggestion[] | null>(null);
-  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
+  const [previewDraft, setPreviewDraft] = useState<Draft | null>(null);
   const [markPostModal, setMarkPostModal] = useState<CalendarEntry | null>(null);
   const [postForm, setPostForm] = useState({
     content: "",
@@ -91,7 +77,7 @@ const CalendarPage = memo(function CalendarPage() {
         `/api/linkedin/calendar?date_from=${dateFrom}&date_to=${dateTo}`
       ),
       fetch("/api/linkedin/pillars"),
-      fetch("/api/linkedin/drafts?status=draft"),
+      fetch("/api/linkedin/drafts"),
       fetch("/api/linkedin/series"),
     ]);
     const eData = await eRes.json();
@@ -206,21 +192,6 @@ const CalendarPage = memo(function CalendarPage() {
     fetchData();
   };
 
-  const handleGetSuggestions = async () => {
-    setLoadingSuggestions(true);
-    setSuggestionsError(null);
-    try {
-      const res = await fetch("/api/linkedin/calendar/suggestions");
-      if (!res.ok) throw new Error("Server error — try again later");
-      const data = await res.json();
-      setSuggestions(data.suggestions || []);
-    } catch (err) {
-      setSuggestionsError(err instanceof Error ? err.message : "Failed to load suggestions");
-    } finally {
-      setLoadingSuggestions(false);
-    }
-  };
-
   // Build calendar grid
   const firstDay = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -246,95 +217,23 @@ const CalendarPage = memo(function CalendarPage() {
         <h1 className="text-2xl font-semibold text-stone-900 tracking-tight">
           Content Calendar
         </h1>
-        <Button
-          onClick={handleGetSuggestions}
-          disabled={loadingSuggestions}
-          className="bg-stone-900 text-white hover:bg-stone-800"
-        >
-          <Sparkles className="w-4 h-4" />
-          {loadingSuggestions ? "Loading..." : "AI Suggestions"}
-        </Button>
       </div>
 
-      {/* Suggestions error */}
-      {suggestionsError && (
-        <div className="bg-red-50 rounded-2xl border border-red-200/60 p-4 flex items-center justify-between">
-          <p className="text-sm text-red-700">{suggestionsError}</p>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSuggestionsError(null)}
-            className="text-xs text-red-500 hover:text-red-700 ml-4"
-          >
-            Dismiss
-          </Button>
-        </div>
-      )}
-
-      {/* Suggestions */}
-      {suggestions && (
-        <div className="bg-stone-50 rounded-2xl border border-stone-200/60 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-stone-900">
-              AI Content Suggestions for Next Week
-            </h3>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setSuggestions(null)}
-              className="hover:bg-stone-200/60"
-              aria-label="Dismiss suggestions"
-            >
-              <X className="w-4 h-4 text-stone-500" />
-            </Button>
-          </div>
-          {suggestions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8">
-              <div className="w-16 h-16 bg-stone-100 rounded-2xl flex items-center justify-center mb-3">
-                <CalendarDays className="w-7 h-7 text-stone-400" />
-              </div>
-              <p className="text-sm text-stone-500">No suggestions available.</p>
-            </div>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {suggestions.map((s, i) => (
-                <div
-                  key={i}
-                  className="bg-white rounded-xl border border-stone-200/60 p-3 space-y-1.5"
-                >
-                  {s.raw ? (
-                    <p className="text-xs text-stone-700 whitespace-pre-wrap leading-relaxed">
-                      {s.raw}
-                    </p>
-                  ) : (
-                    <>
-                      {(s.date) && (
-                        <p className="text-xs font-semibold text-stone-600">{s.date}</p>
-                      )}
-                      {(s.topic || s.title) && (
-                        <p className="text-sm font-medium text-stone-900 leading-snug">
-                          {s.topic ?? s.title}
-                        </p>
-                      )}
-                      {s.pillar && (
-                        <Badge
-                          variant="secondary"
-                          className="bg-stone-100 text-stone-700 border-none"
-                        >
-                          {s.pillar}
-                        </Badge>
-                      )}
-                      {s.notes && (
-                        <p className="text-xs text-stone-500 leading-relaxed">{s.notes}</p>
-                      )}
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Legend */}
+      <div className="flex gap-4 flex-wrap text-xs text-stone-500">
+        <span className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-400" />
+          Planned
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
+          Ready
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-stone-400" />
+          Posted
+        </span>
+      </div>
 
       {/* Month navigation */}
       <div className="flex items-center justify-center gap-4">
@@ -362,8 +261,63 @@ const CalendarPage = memo(function CalendarPage() {
         </Button>
       </div>
 
-      {/* Calendar grid */}
-      <div className="bg-white rounded-2xl border border-stone-200/60 overflow-hidden">
+      {/* Mobile: list view */}
+      <div className="sm:hidden space-y-2">
+        {(() => {
+          const daysWithEntries: { day: number; dateStr: string; dayEntries: CalendarEntry[] }[] = [];
+          for (let d = 1; d <= daysInMonth; d++) {
+            const ds = getDateStr(d);
+            const de = entries.filter((e) => e.scheduled_date === ds);
+            if (de.length > 0) daysWithEntries.push({ day: d, dateStr: ds, dayEntries: de });
+          }
+          if (daysWithEntries.length === 0) {
+            return (
+              <div className="text-center py-12 text-sm text-stone-400">
+                No scheduled posts this month
+              </div>
+            );
+          }
+          return daysWithEntries.map(({ day, dateStr: ds, dayEntries: de }) => (
+            <div key={day} className="bg-white rounded-2xl border border-stone-200/60 p-3">
+              <p className="text-xs font-semibold text-stone-500 mb-2">
+                {new Date(year, month, day).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                {day === todayStr && <span className="ml-1.5 text-stone-900">Today</span>}
+              </p>
+              <div className="space-y-1.5">
+                {de.map((entry) => {
+                  const pillar = entry.pillar_id ? pillarMap[entry.pillar_id] : null;
+                  const linkedDraft = entry.draft_id ? draftMap[entry.draft_id] : null;
+                  const displayText = linkedDraft?.topic || entry.notes || "";
+                  return (
+                    <div
+                      key={entry.id}
+                      onClick={() => linkedDraft && setPreviewDraft(linkedDraft)}
+                      className={`text-sm px-3 py-2.5 rounded-xl border ${STATUS_COLORS[entry.status] || ""} ${linkedDraft ? "cursor-pointer active:scale-[0.98] transition-all" : ""}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {entry.scheduled_time && (
+                          <span className="font-semibold text-xs shrink-0">{entry.scheduled_time}</span>
+                        )}
+                        {pillar && (
+                          <span className="font-medium text-xs" style={{ color: pillar.color }}>
+                            {pillar.name}
+                          </span>
+                        )}
+                      </div>
+                      {displayText && (
+                        <p className="text-stone-600 text-xs mt-1 line-clamp-2">{displayText}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ));
+        })()}
+      </div>
+
+      {/* Desktop: Calendar grid */}
+      <div className="hidden sm:block bg-white rounded-2xl border border-stone-200/60 overflow-hidden">
         {/* Day headers */}
         <div className="grid grid-cols-7 border-b border-stone-200/60">
           {DAYS.map((day) => (
@@ -421,42 +375,41 @@ const CalendarPage = memo(function CalendarPage() {
                   const linkedDraft = entry.draft_id
                     ? draftMap[entry.draft_id]
                     : null;
+                  const displayText = linkedDraft?.topic || entry.notes || "";
                   return (
                     <div
                       key={entry.id}
                       className={`group text-xs px-1.5 py-1 rounded-lg border mb-0.5 ${STATUS_COLORS[entry.status] || ""}`}
                     >
-                      <div className="flex justify-between items-start">
-                        <div className="min-w-0 flex-1">
-                          {entry.scheduled_time && (
-                            <span className="font-medium">
-                              {entry.scheduled_time}{" "}
-                            </span>
-                          )}
-                          {pillar && (
-                            <span
-                              className="font-medium"
-                              style={{ color: pillar.color }}
-                            >
-                              {pillar.name}
-                            </span>
-                          )}
-                          {linkedDraft && (
-                            <div className="flex items-center gap-0.5 text-stone-600">
-                              <FileText className="w-3 h-3" />
-                              <span className="truncate">{linkedDraft.topic}</span>
-                            </div>
-                          )}
-                          {entry.notes && (
-                            <p className="truncate">{entry.notes}</p>
+                      <div className="flex justify-between items-start gap-0.5">
+                        <div
+                          className={`min-w-0 flex-1 ${linkedDraft ? "cursor-pointer" : ""}`}
+                          onClick={() => linkedDraft && setPreviewDraft(linkedDraft)}
+                        >
+                          <p className="truncate">
+                            {entry.scheduled_time && (
+                              <span className="font-medium">
+                                {entry.scheduled_time}{" "}
+                              </span>
+                            )}
+                            {pillar && (
+                              <span
+                                className="font-medium"
+                                style={{ color: pillar.color }}
+                              >
+                                {pillar.name}
+                              </span>
+                            )}
+                          </p>
+                          {displayText && (
+                            <p className="truncate text-stone-600">{displayText}</p>
                           )}
                         </div>
                         <div className="flex gap-0.5 shrink-0 opacity-100 lg:opacity-0 lg:group-hover:opacity-100">
-                          {entry.status !== "posted" && (
+                          {entry.status !== "posted" ? (
                             <button
                               onClick={() => {
                                 setMarkPostModal(entry);
-                                // Pre-fill content from linked draft
                                 if (linkedDraft) {
                                   setPostForm({
                                     content: linkedDraft.content,
@@ -471,7 +424,7 @@ const CalendarPage = memo(function CalendarPage() {
                             >
                               <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
                             </button>
-                          )}
+                          ) : null}
                           <button
                             onClick={() => handleDeleteEntry(entry.id)}
                             className="p-1.5 min-w-[28px] min-h-[28px] flex items-center justify-center hover:bg-red-100 rounded"
@@ -702,6 +655,36 @@ const CalendarPage = memo(function CalendarPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Draft Preview Modal */}
+      {previewDraft && (
+        <div
+          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 backdrop-blur-sm"
+          onClick={() => setPreviewDraft(null)}
+        >
+          <div
+            className="bg-white rounded-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto mx-4 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-stone-100">
+              <h3 className="text-sm font-semibold text-stone-900 truncate">
+                {previewDraft.topic}
+              </h3>
+              <button
+                onClick={() => setPreviewDraft(null)}
+                className="p-1.5 hover:bg-stone-100 rounded-lg"
+              >
+                <X className="w-4 h-4 text-stone-400" />
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
+                {previewDraft.content}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

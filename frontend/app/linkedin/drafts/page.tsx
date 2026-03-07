@@ -1,14 +1,15 @@
 "use client";
 
 import { memo, useEffect, useState, useCallback } from "react";
-import { Sparkles, Plus, PenTool, CalendarPlus, X, Send, CheckCircle, AlertCircle, Lightbulb, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, PenTool, CalendarPlus, X, Send, CheckCircle, AlertCircle } from "lucide-react";
 import DraftEditor from "../components/DraftEditor";
 import { useToast } from "../components/Toast";
+import { toast as sonnerToast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { useBackgroundTask } from "@/hooks/use-background-task";
 import type { Draft, Pillar } from "@/types/linkedin";
 
 const DraftsPage = memo(function DraftsPage() {
@@ -17,17 +18,10 @@ const DraftsPage = memo(function DraftsPage() {
   const [pillars, setPillars] = useState<Pillar[]>([]);
   const [showGenerate, setShowGenerate] = useState(false);
   const [showManual, setShowManual] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>("active");
-  const [scheduleModal, setScheduleModal] = useState<Draft | null>(null);
-  const [showIdeas, setShowIdeas] = useState(false);
-  const [ideas, setIdeas] = useState<Array<{ topic: string; hook_style: string; pillar: string | null }>>([]);
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [scheduleForm, setScheduleForm] = useState({
-    date: "",
-    time: "",
-  });
+  const [rescheduleModal, setRescheduleModal] = useState<Draft | null>(null);
+  const [rescheduleForm, setRescheduleForm] = useState({ date: "", time: "" });
   const [publishModal, setPublishModal] = useState<Draft | null>(null);
   const [publishForm, setPublishForm] = useState({
     post_url: "",
@@ -58,56 +52,36 @@ const DraftsPage = memo(function DraftsPage() {
     setPillars(data.pillars || []);
   }, []);
 
+  const { running: generating, launch: launchGenerate } = useBackgroundTask<{ drafts: Draft[] }>({
+    key: "drafts_generate",
+    onDone: () => {
+      setShowGenerate(false);
+      setGenForm({ topic: "", pillar_id: "", style: "", num_variants: 3 });
+      fetchDrafts();
+    },
+    successMessage: "Drafts generated",
+  });
+
   useEffect(() => {
     fetchDrafts();
     fetchPillars();
   }, [fetchDrafts, fetchPillars]);
 
-  const handleGenerate = async (e: React.FormEvent) => {
+  const handleGenerate = (e: React.FormEvent) => {
     e.preventDefault();
-    setGenerating(true);
     setGenerateError(null);
-    try {
-      const res = await fetch("/api/linkedin/drafts/generate", {
+    launchGenerate(
+      "/api/linkedin/drafts/generate",
+      {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...genForm,
           pillar_id: genForm.pillar_id ? Number(genForm.pillar_id) : null,
         }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || `Generation failed (${res.status})`);
-      }
-      setShowGenerate(false);
-      setGenForm({ topic: "", pillar_id: "", style: "", num_variants: 3 });
-      fetchDrafts();
-    } catch (err) {
-      setGenerateError(err instanceof Error ? err.message : "AI generation failed. Please try again.");
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  const handleFetchIdeas = async () => {
-    if (showIdeas && ideas.length > 0) {
-      setShowIdeas(!showIdeas);
-      return;
-    }
-    setShowIdeas(true);
-    setLoadingIdeas(true);
-    try {
-      const res = await fetch("/api/linkedin/dashboard/post-ideas", { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        setIdeas(data.ideas || []);
-      }
-    } catch (err) {
-      console.error("DraftsPage.handleFetchIdeas: POST /api/linkedin/dashboard/post-ideas failed:", err);
-    } finally {
-      setLoadingIdeas(false);
-    }
+      },
+      "Generating drafts — you can navigate away safely"
+    );
   };
 
   const handleManualCreate = async (e: React.FormEvent) => {
@@ -134,10 +108,8 @@ const DraftsPage = memo(function DraftsPage() {
     fetchDrafts();
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this draft?")) return;
-    await fetch(`/api/linkedin/drafts/${id}`, { method: "DELETE" });
-    fetchDrafts();
+  const handleDiscard = async (id: number) => {
+    await handleUpdate(id, { status: "discarded" });
   };
 
   const openPublishModal = (draft: Draft) => {
@@ -164,32 +136,97 @@ const DraftsPage = memo(function DraftsPage() {
       toast.error("Failed to mark draft as posted. Please try again.");
       return;
     }
+    toast.success("Draft published! Add metrics later to trigger analysis.");
     setPublishModal(null);
     setPublishForm({ post_url: "", post_type: "text", posted_at: "" });
     fetchDrafts();
   };
 
-  const handleSchedule = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!scheduleModal) return;
-    const res = await fetch("/api/linkedin/calendar", {
+  const handleAutoSchedule = useCallback(async (draft: Draft) => {
+    const res = await fetch(`/api/linkedin/drafts/${draft.id}/auto-schedule`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        scheduled_date: scheduleForm.date,
-        scheduled_time: scheduleForm.time || null,
-        draft_id: scheduleModal.id,
-        pillar_id: scheduleModal.pillar_id,
-        status: "ready",
-        notes: scheduleModal.topic,
-      }),
     });
     if (!res.ok) {
-      toast.error("Failed to schedule draft. Please try again.");
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.detail || "Failed to schedule draft");
       return;
     }
-    setScheduleModal(null);
-    setScheduleForm({ date: "", time: "" });
+    const data = await res.json();
+    const entry = data.calendar_entry;
+    const reason = entry?.reason || "AI-optimized slot";
+    const dateStr = entry?.scheduled_date || "";
+    const timeStr = entry?.scheduled_time || "";
+
+    const formatted = dateStr
+      ? new Date(`${dateStr}T${timeStr || "00:00"}`).toLocaleDateString("en-US", {
+          weekday: "short", month: "short", day: "numeric",
+        }) + (timeStr ? ` at ${timeStr}` : "")
+      : "soon";
+
+    sonnerToast.success(`Scheduled for ${formatted}`, {
+      description: reason,
+      classNames: {
+        description: "!text-stone-600",
+      },
+      action: {
+        label: "Change",
+        onClick: () => {
+          setRescheduleModal(draft);
+          setRescheduleForm({ date: dateStr, time: timeStr });
+        },
+      },
+      duration: 8000,
+    });
+    fetchDrafts();
+  }, [fetchDrafts, toast]);
+
+  const handleReschedule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rescheduleModal) return;
+
+    // Find the calendar entry for this draft and update it
+    const calRes = await fetch(`/api/linkedin/calendar?draft_id=${rescheduleModal.id}`);
+    const calData = await calRes.json();
+    const entries = calData.entries || [];
+    const entry = entries.find((e: Record<string, unknown>) => e.draft_id === rescheduleModal.id);
+
+    if (entry) {
+      const res = await fetch(`/api/linkedin/calendar/${entry.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scheduled_date: rescheduleForm.date,
+          scheduled_time: rescheduleForm.time || null,
+        }),
+      });
+      if (!res.ok) {
+        toast.error("Failed to reschedule. Please try again.");
+        return;
+      }
+    } else {
+      // No existing entry, create new
+      const res = await fetch("/api/linkedin/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scheduled_date: rescheduleForm.date,
+          scheduled_time: rescheduleForm.time || null,
+          draft_id: rescheduleModal.id,
+          pillar_id: rescheduleModal.pillar_id,
+          status: "ready",
+          notes: rescheduleModal.topic,
+        }),
+      });
+      if (!res.ok) {
+        toast.error("Failed to schedule. Please try again.");
+        return;
+      }
+    }
+
+    toast.success("Schedule updated");
+    setRescheduleModal(null);
+    setRescheduleForm({ date: "", time: "" });
+    fetchDrafts();
   };
 
   const selectClass =
@@ -197,8 +234,7 @@ const DraftsPage = memo(function DraftsPage() {
 
   const statusCounts = {
     active: drafts.filter((d) => d.status === "draft" || d.status === "revised").length,
-    draft: drafts.filter((d) => d.status === "draft").length,
-    revised: drafts.filter((d) => d.status === "revised").length,
+    scheduled: drafts.filter((d) => d.status === "scheduled").length,
     posted: drafts.filter((d) => d.status === "posted").length,
     discarded: drafts.filter((d) => d.status === "discarded").length,
   };
@@ -210,118 +246,66 @@ const DraftsPage = memo(function DraftsPage() {
       : drafts;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
-      <div className="flex justify-between items-center">
+    <div className="max-w-6xl mx-auto space-y-4 sm:space-y-6 px-1 sm:px-0">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-stone-900 tracking-tight">Draft Workshop</h1>
-          <p className="text-sm text-stone-500 mt-1">
+          <h1 className="text-xl sm:text-2xl font-semibold text-stone-900 tracking-tight">Draft Workshop</h1>
+          <p className="text-sm text-stone-500 mt-0.5">
             {statusCounts.active} active · {drafts.length} total
           </p>
         </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
-            onClick={handleFetchIdeas}
-            disabled={loadingIdeas}
-            className="rounded-xl active:scale-[0.98] transition-all"
-          >
-            <Lightbulb className="w-4 h-4" />
-            {loadingIdeas ? "Loading..." : "Get Ideas"}
-            {showIdeas && !loadingIdeas ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </Button>
-          <Button
-            variant="outline"
             onClick={() => setShowManual(true)}
-            className="rounded-xl active:scale-[0.98] transition-all"
+            className="rounded-xl active:scale-[0.98] transition-all h-11 sm:h-9 text-[15px] sm:text-sm flex-1 sm:flex-none"
           >
             <Plus className="w-4 h-4" />
-            Manual Draft
+            Manual
           </Button>
           <Button
             onClick={() => setShowGenerate(true)}
-            className="rounded-xl active:scale-[0.98] transition-all"
+            className="rounded-xl active:scale-[0.98] transition-all h-11 sm:h-9 text-[15px] sm:text-sm flex-1 sm:flex-none"
           >
-            <Sparkles className="w-4 h-4" />
-            Generate with AI
+            <PenTool className="w-4 h-4" />
+            Generate
           </Button>
         </div>
       </div>
 
-      {/* Status filter tabs */}
-      <Tabs value={filterStatus} onValueChange={setFilterStatus}>
-        <div className="bg-white rounded-2xl border border-stone-200/60 px-4 py-3">
-          <TabsList className="bg-stone-100 rounded-xl">
-            {[
-              { key: "active", label: "Active", count: statusCounts.active },
-              { key: "draft", label: "Draft", count: statusCounts.draft },
-              { key: "revised", label: "Revised", count: statusCounts.revised },
-              { key: "posted", label: "Posted", count: statusCounts.posted },
-              { key: "discarded", label: "Discarded", count: statusCounts.discarded },
-            ].map((tab) => (
-              <TabsTrigger key={tab.key} value={tab.key} className="rounded-lg text-xs data-[state=active]:bg-white data-[state=active]:text-stone-900 data-[state=active]:shadow-sm">
-                {tab.label}
-                {tab.count > 0 && (
-                  <span className="ml-1 opacity-75">({tab.count})</span>
-                )}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </div>
-      </Tabs>
-
-      {/* Ideas panel */}
-      {showIdeas && (
-        <div className="bg-stone-50 rounded-2xl border border-stone-200/60 p-5 space-y-3">
-          <h3 className="text-sm font-semibold text-stone-900 flex items-center gap-2">
-            <Lightbulb className="w-4 h-4 text-stone-600" />
-            Post Ideas from Your Playbook
-          </h3>
-          {loadingIdeas ? (
-            <div className="flex items-center gap-2 text-sm text-stone-600 py-2">
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-stone-500" />
-              Generating ideas...
-            </div>
-          ) : ideas.length > 0 ? (
-            <div className="space-y-2">
-              {ideas.map((idea, i) => (
-                <div key={i} className="flex items-start justify-between gap-3 p-3 bg-white border border-stone-200/60 rounded-xl">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-stone-800">{idea.topic}</p>
-                    {idea.pillar && <p className="text-xs text-stone-400 mt-0.5">{idea.pillar}</p>}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant="secondary" className="bg-stone-100 text-stone-600 rounded-full">
-                      {idea.hook_style}
-                    </Badge>
-                    <Button
-                      size="sm"
-                      onClick={() => {
-                        setGenForm({ ...genForm, topic: idea.topic, num_variants: 1 });
-                        setShowGenerate(true);
-                        setShowIdeas(false);
-                      }}
-                      className="rounded-xl text-xs active:scale-[0.98] transition-all"
-                    >
-                      Use
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-stone-500">No ideas yet. Add more posts and learnings to generate ideas.</p>
-          )}
-        </div>
-      )}
+      {/* Status filter pills */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide">
+        {[
+          { key: "active", label: "Active", count: statusCounts.active },
+          { key: "scheduled", label: "Scheduled", count: statusCounts.scheduled },
+          { key: "posted", label: "Posted", count: statusCounts.posted },
+          { key: "discarded", label: "Discarded", count: statusCounts.discarded },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setFilterStatus(tab.key)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+              filterStatus === tab.key
+                ? "bg-stone-900 text-white"
+                : "bg-stone-100 text-stone-600 hover:bg-stone-200"
+            }`}
+          >
+            {tab.label}
+            {tab.count > 0 && (
+              <span className="ml-1 opacity-75">({tab.count})</span>
+            )}
+          </button>
+        ))}
+      </div>
 
       {/* Manual draft form */}
       {showManual && (
         <form
           onSubmit={handleManualCreate}
-          className="bg-white rounded-2xl border border-stone-200/60 p-6 space-y-4"
+          className="bg-white rounded-2xl border border-stone-200/60 p-4 sm:p-6 space-y-4"
         >
           <div className="flex justify-between items-center">
-            <h3 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
+            <h3 className="text-base sm:text-lg font-semibold text-stone-900 flex items-center gap-2">
               <PenTool className="w-5 h-5 text-stone-600" />
               New Draft
             </h3>
@@ -333,7 +317,7 @@ const DraftsPage = memo(function DraftsPage() {
               <X className="w-5 h-5 text-stone-400" />
             </button>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-stone-700 mb-1">
                 Topic
@@ -344,7 +328,7 @@ const DraftsPage = memo(function DraftsPage() {
                 onChange={(e) =>
                   setManualForm({ ...manualForm, topic: e.target.value })
                 }
-                className="rounded-xl border-stone-200"
+                className="rounded-xl border-stone-200 h-11 sm:h-9 text-base sm:text-sm"
                 placeholder="What's this draft about?"
                 required
               />
@@ -407,10 +391,10 @@ const DraftsPage = memo(function DraftsPage() {
       {showGenerate && (
         <form
           onSubmit={handleGenerate}
-          className="bg-stone-50 rounded-2xl border border-stone-200/60 p-6 space-y-4"
+          className="bg-stone-50 rounded-2xl border border-stone-200/60 p-4 sm:p-6 space-y-4"
         >
-          <h3 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
-            <Sparkles className="w-5 h-5 text-stone-600" />
+          <h3 className="text-base sm:text-lg font-semibold text-stone-900 flex items-center gap-2">
+            <PenTool className="w-5 h-5 text-stone-600" />
             AI Draft Generation
           </h3>
           {generateError && (
@@ -429,12 +413,12 @@ const DraftsPage = memo(function DraftsPage() {
               onChange={(e) =>
                 setGenForm({ ...genForm, topic: e.target.value })
               }
-              className="rounded-xl border-stone-200"
+              className="rounded-xl border-stone-200 h-11 sm:h-9 text-base sm:text-sm"
               placeholder="e.g., 5 lessons from my first year as a manager"
               required
             />
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
             <div>
               <label className="block text-sm font-medium text-stone-700 mb-1">
                 Pillar
@@ -464,11 +448,11 @@ const DraftsPage = memo(function DraftsPage() {
                 onChange={(e) =>
                   setGenForm({ ...genForm, style: e.target.value })
                 }
-                className="rounded-xl border-stone-200"
-                placeholder="e.g., conversational, bold"
+                className="rounded-xl border-stone-200 h-11 sm:h-9 text-base sm:text-sm"
+                placeholder="e.g., bold"
               />
             </div>
-            <div>
+            <div className="col-span-2 sm:col-span-1">
               <label className="block text-sm font-medium text-stone-700 mb-1">
                 Variants
               </label>
@@ -541,7 +525,7 @@ const DraftsPage = memo(function DraftsPage() {
                 onClick={() => setShowGenerate(true)}
                 className="mt-5 rounded-xl active:scale-[0.98] transition-all"
               >
-                <Sparkles className="w-4 h-4" />
+                <PenTool className="w-4 h-4" />
                 Generate with AI
               </Button>
             )}
@@ -552,27 +536,27 @@ const DraftsPage = memo(function DraftsPage() {
               key={draft.id}
               draft={draft}
               onUpdate={handleUpdate}
-              onDelete={handleDelete}
-              onSchedule={setScheduleModal}
+              onDelete={handleDiscard}
+              onSchedule={handleAutoSchedule}
               onPublish={openPublishModal}
             />
           ))
         )}
       </div>
 
-      {/* Schedule Modal */}
-      {scheduleModal && (
+      {/* Reschedule Modal */}
+      {rescheduleModal && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 backdrop-blur-sm">
           <form
-            onSubmit={handleSchedule}
+            onSubmit={handleReschedule}
             className="bg-white rounded-2xl p-6 w-full max-w-[calc(100vw-2rem)] sm:max-w-md shadow-xl space-y-4 mx-4 sm:mx-0"
           >
             <h3 className="text-lg font-semibold text-stone-900 flex items-center gap-2">
               <CalendarPlus className="w-5 h-5 text-stone-600" />
-              Schedule Draft
+              Change Schedule
             </h3>
-            <p className="text-sm text-stone-500">
-              &ldquo;{scheduleModal.topic}&rdquo;
+            <p className="text-sm text-stone-500 line-clamp-2">
+              &ldquo;{rescheduleModal.topic}&rdquo;
             </p>
             <div>
               <label className="block text-sm font-medium text-stone-700 mb-1">
@@ -580,9 +564,9 @@ const DraftsPage = memo(function DraftsPage() {
               </label>
               <Input
                 type="date"
-                value={scheduleForm.date}
+                value={rescheduleForm.date}
                 onChange={(e) =>
-                  setScheduleForm({ ...scheduleForm, date: e.target.value })
+                  setRescheduleForm({ ...rescheduleForm, date: e.target.value })
                 }
                 className="rounded-xl border-stone-200"
                 required
@@ -590,13 +574,13 @@ const DraftsPage = memo(function DraftsPage() {
             </div>
             <div>
               <label className="block text-sm font-medium text-stone-700 mb-1">
-                Time (optional)
+                Time
               </label>
               <Input
                 type="time"
-                value={scheduleForm.time}
+                value={rescheduleForm.time}
                 onChange={(e) =>
-                  setScheduleForm({ ...scheduleForm, time: e.target.value })
+                  setRescheduleForm({ ...rescheduleForm, time: e.target.value })
                 }
                 className="rounded-xl border-stone-200"
               />
@@ -606,12 +590,12 @@ const DraftsPage = memo(function DraftsPage() {
                 type="submit"
                 className="rounded-xl active:scale-[0.98] transition-all"
               >
-                Schedule
+                Update Schedule
               </Button>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setScheduleModal(null)}
+                onClick={() => setRescheduleModal(null)}
                 className="rounded-xl active:scale-[0.98] transition-all"
               >
                 Cancel

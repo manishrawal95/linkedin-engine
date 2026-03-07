@@ -8,6 +8,17 @@ import { Input } from "@/components/ui/input";
 interface MetricsFormProps {
   postId: number;
   author?: string;
+  initialMetrics?: {
+    impressions?: number;
+    members_reached?: number;
+    profile_viewers?: number;
+    followers_gained?: number;
+    likes?: number;
+    comments?: number;
+    reposts?: number;
+    saves?: number;
+    sends?: number;
+  };
   onSubmit: (postId: number, data: Record<string, number>) => Promise<void>;
   onCancel: () => void;
 }
@@ -15,20 +26,21 @@ interface MetricsFormProps {
 const MetricsForm = memo(function MetricsForm({
   postId,
   author = "me",
+  initialMetrics,
   onSubmit,
   onCancel,
 }: MetricsFormProps) {
   const isOther = author !== "me";
   const [form, setForm] = useState({
-    impressions: 0,
-    members_reached: 0,
-    profile_viewers: 0,
-    followers_gained: 0,
-    likes: 0,
-    comments: 0,
-    reposts: 0,
-    saves: 0,
-    sends: 0,
+    impressions: initialMetrics?.impressions ?? 0,
+    members_reached: initialMetrics?.members_reached ?? 0,
+    profile_viewers: initialMetrics?.profile_viewers ?? 0,
+    followers_gained: initialMetrics?.followers_gained ?? 0,
+    likes: initialMetrics?.likes ?? 0,
+    comments: initialMetrics?.comments ?? 0,
+    reposts: initialMetrics?.reposts ?? 0,
+    saves: initialMetrics?.saves ?? 0,
+    sends: initialMetrics?.sends ?? 0,
   });
   const [saving, setSaving] = useState(false);
 

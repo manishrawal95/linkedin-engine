@@ -157,6 +157,7 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             current_value REAL DEFAULT 0,
             deadline TEXT,
             status TEXT DEFAULT 'active',
+            source TEXT DEFAULT 'manual',
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -244,6 +245,150 @@ def _init_tables(conn: sqlite3.Connection) -> None:
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    conn.commit()
+
+    # Migrate: create creator_memory tables
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS creator_memory (
+            id INTEGER PRIMARY KEY,
+            voice_profile TEXT NOT NULL DEFAULT '{}',
+            content_dna TEXT NOT NULL DEFAULT '{}',
+            audience_model TEXT NOT NULL DEFAULT '{}',
+            growth_trajectory TEXT NOT NULL DEFAULT '{}',
+            version INTEGER NOT NULL DEFAULT 1,
+            confidence_overall REAL NOT NULL DEFAULT 0.3,
+            post_count_at_build INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memory_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL REFERENCES creator_memory(id),
+            post_id INTEGER REFERENCES posts(id),
+            update_type TEXT NOT NULL,
+            delta TEXT NOT NULL DEFAULT '{}',
+            contradictions TEXT,
+            confidence_before REAL,
+            confidence_after REAL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_updates_post ON memory_updates(post_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_updates_type ON memory_updates(update_type)")
+
+    # Migrate: create ideas table for auto-ideation
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ideas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic TEXT NOT NULL,
+            hook_style TEXT,
+            pillar_id INTEGER REFERENCES content_pillars(id),
+            source TEXT NOT NULL DEFAULT 'ai',
+            score REAL DEFAULT 0.5,
+            status TEXT NOT NULL DEFAULT 'pending',
+            draft_id INTEGER REFERENCES drafts(id),
+            batch_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ideas_batch ON ideas(batch_id)")
+
+    # Migrate: add fit_reason to ideas if missing
+    idea_cols = {r["name"] for r in conn.execute("PRAGMA table_info(ideas)").fetchall()}
+    if "fit_reason" not in idea_cols:
+        conn.execute("ALTER TABLE ideas ADD COLUMN fit_reason TEXT")
+
+    # Migrate: add linkedin_urn to posts if missing
+    post_cols_urn = {row[1] for row in conn.execute("PRAGMA table_info(posts)").fetchall()}
+    if "linkedin_urn" not in post_cols_urn:
+        conn.execute("ALTER TABLE posts ADD COLUMN linkedin_urn TEXT")
+        logger.info("Added column linkedin_urn to posts")
+
+    # Migrate: add confidence to drafts if missing
+    draft_cols_conf = {row[1] for row in conn.execute("PRAGMA table_info(drafts)").fetchall()}
+    if "confidence" not in draft_cols_conf:
+        conn.execute("ALTER TABLE drafts ADD COLUMN confidence REAL DEFAULT 0.7")
+        logger.info("Added column confidence to drafts")
+
+    # Migrate: create creator_profile table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS creator_profile (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            about_me TEXT NOT NULL DEFAULT '',
+            writing_skill TEXT NOT NULL DEFAULT '',
+            condensed_context TEXT NOT NULL DEFAULT '',
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Migrate: tables for LinkedIn analytics import
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_engagement (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL UNIQUE,
+            impressions INTEGER NOT NULL DEFAULT 0,
+            engagements INTEGER NOT NULL DEFAULT 0,
+            import_batch TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS follower_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL UNIQUE,
+            new_followers INTEGER NOT NULL DEFAULT 0,
+            import_batch TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS audience_demographics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            value TEXT NOT NULL,
+            percentage REAL NOT NULL DEFAULT 0,
+            import_batch TEXT,
+            imported_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(category, value)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analytics_summary (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            total_impressions INTEGER DEFAULT 0,
+            total_members_reached INTEGER DEFAULT 0,
+            total_followers INTEGER DEFAULT 0,
+            period_start TEXT,
+            period_end TEXT,
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    # Strategy reviews table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_reviews (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            health_score INTEGER NOT NULL DEFAULT 5,
+            diagnosis TEXT NOT NULL DEFAULT '',
+            review_data TEXT NOT NULL DEFAULT '{}',
+            metrics_snapshot TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+
+    # View: latest metrics per post (used by 12+ queries across the codebase)
+    conn.execute("""
+        CREATE VIEW IF NOT EXISTS latest_metrics AS
+        SELECT ms.*
+        FROM metrics_snapshots ms
+        INNER JOIN (
+            SELECT post_id, MAX(snapshot_at) AS max_at
+            FROM metrics_snapshots
+            GROUP BY post_id
+        ) latest ON ms.post_id = latest.post_id AND ms.snapshot_at = latest.max_at
+    """)
+
     conn.commit()
 
     logger.info("All tables initialized")

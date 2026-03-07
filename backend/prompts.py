@@ -41,6 +41,42 @@ Respond with ONLY: classification|one-line reason
 Example: hit|95th percentile for both impressions and saves; rate dilution expected from viral distribution"""
 
 
+CLASSIFY_AND_EXTRACT = """Classify this LinkedIn post and extract transferable learnings in ONE pass.
+
+POST CONTENT:
+{content}
+
+POST CONTEXT:
+- Type: {post_type} | Hook style: {hook_style} | Hook line: {hook_line}
+- CTA: {cta_type} | Word count: {word_count} | Pillar: {pillar_name}
+
+PERFORMANCE vs author's {total_posts}-post history:
+- Impressions: {impressions:,} → {impressions_pct}th pct | Saves: {saves} → {saves_pct}th pct
+- Likes: {likes} → {likes_pct}th pct | Eng rate: {engagement_score:.4f} → {rate_pct}th pct
+- Comments: {comments} (CTA: {cta_type}) | Viral: {viral_flag} | Trajectory: {trajectory}
+
+SIMILAR POSTS FOR CROSS-COMPARISON:
+{similar_posts}
+
+EXISTING LEARNINGS — do not duplicate:
+{existing_learnings}
+
+CLASSIFICATION RULES:
+- "hit": Strong impressions AND/OR saves. Viral posts with top-half impressions+saves are hits even with lower rate.
+- "miss": Weak across impressions, saves, AND engagement rate. All three must be below baseline.
+- "average": Solid but not standout.
+
+LEARNING RULES:
+1. Write as REUSABLE RULES — no references to this post's specific content or hook text.
+2. Each learning must be directly evidenced by the metrics — no speculation.
+3. For cta=none or cta=link, do not comment on low comments — it is expected.
+4. Use similar posts comparison to identify what changed.
+5. impact must be: positive | negative | context-dependent
+
+Respond ONLY in JSON:
+{{"classification": "hit|average|miss", "reason": "one-line reason", "learnings": [{{"insight": "...", "category": "hook|format|topic|cta|tone|length|timing", "impact": "positive|negative|context-dependent", "confidence": 0.0}}]}}"""
+
+
 BATCH_CLASSIFY_PERFORMANCE = """Classify each LinkedIn post as hit/average/miss using holistic judgment.
 
 AUTHOR BASELINE ({total_posts} posts — latest snapshot per post):
@@ -157,13 +193,9 @@ Content pillar: {pillar_name}
 
 Style preferences: {style}
 
-Author's playbook (strategic rules):
-{playbook}
+{creator_context}
 
-Confirmed learnings to apply directly (ordered by evidence strength):
-{top_learnings}
-
-Author's voice reference (top-performing posts):
+Voice reference (top-performing posts):
 {voice_reference}
 
 Available hooks to consider:
@@ -176,7 +208,7 @@ Generate {num_variants} different variants of this post. Each variant should:
 2. Include the full post body
 3. End with a CTA appropriate to the content
 4. Include 3-5 relevant hashtags
-5. Apply the confirmed learnings above — especially those with high confirmation counts
+5. Apply the confirmed learnings — especially those with high confirmation counts
 
 Respond in JSON format:
 [
@@ -226,9 +258,9 @@ Your job: Interpret the rough idea and generate 5 concrete, specific angles a pe
 
 Rules:
 1. Read the rough idea literally. If it mentions a person, relationship, or event — write angles about THAT.
-2. Each angle is a specific story, lesson, or observation — not a vague theme.
+2. Each topic must be a SHORT, punchy title (max 12 words) — a headline, NOT a description or paragraph.
 3. Use a different hook style for each of the 5 angles: question, contrarian, story, stat, cliffhanger, list, or statement.
-4. Write angles as first-person post topics (e.g. "The lesson my mom taught me that changed how I run my business")
+4. Write as first-person headlines (e.g. "The lesson my mom taught me about business")
 
 Respond ONLY in JSON:
 [{{"topic": "specific angle directly about the rough idea", "hook_style": "question|contrarian|story|stat|cliffhanger|list|statement", "pillar": null}}]"""
@@ -246,40 +278,34 @@ ORIGINAL:
 Return ONLY the improved post text. No preamble, no explanation."""
 
 
-CALENDAR_SUGGESTIONS = """Based on the author's content pillars, posting patterns, and series schedule,
-suggest a content plan for the next week.
 
-Content pillars:
-{pillars}
+OPTIMAL_SCHEDULE = """You are a LinkedIn posting strategist. Analyze this creator's historical data to pick the single best date and time to schedule the given draft.
 
-Active series:
-{series}
+DRAFT TO SCHEDULE:
+- Topic: {draft_topic}
+- Pillar: {draft_pillar}
 
-Recent posting frequency: {posting_frequency} posts/week
-Pillar balance (posts per pillar this month):
+POSTING HISTORY (recent posts with engagement):
+{post_history}
+
+ALREADY SCHEDULED (avoid these slots):
+{occupied_slots}
+
+PILLAR BALANCE (last 30 days):
 {pillar_balance}
 
-Best performing days/times:
-{best_times}
+TODAY: {today}
 
-Suggest 3-5 posts for next week. For each:
-1. Day and time
-2. Topic idea
-3. Which pillar it belongs to
-4. Which series (if applicable)
-5. Suggested hook style
+Rules:
+1. Pick a date in the next 14 days (not today).
+2. Do not pick a date/time that conflicts with already scheduled slots.
+3. Do not schedule on the same day as another post unless the creator regularly posts multiple times per day.
+4. Consider which day-of-week and hour historically got the best engagement.
+5. Consider pillar spacing — avoid back-to-back same-pillar posts.
+6. If not enough historical data, default to a weekday (Tue-Thu) at 08:30.
 
-Respond in JSON format:
-[
-  {{
-    "day": "monday",
-    "time": "09:00",
-    "topic": "...",
-    "pillar_id": 1,
-    "series_id": null,
-    "hook_style": "question"
-  }}
-]"""
+Respond ONLY in JSON:
+{{"date": "YYYY-MM-DD", "time": "HH:MM", "reason": "max 12 words explaining why this slot"}}"""
 
 AUTO_FILL = """Extract structured metadata from this LinkedIn post.
 
@@ -306,3 +332,166 @@ Rules:
 - post_type: infer from content (default "text" if uncertain)
 - topic_tags: 2-4 specific topic tags, lowercase, no #
 - pillar_id: integer id from the CONTENT PILLARS list above that best matches the post topic; null if no pillars are defined or none fit"""
+
+
+# ── Creator Memory Prompts ───────────────────────────────────────
+
+SYSTEM_MEMORY = """You are analyzing a LinkedIn creator's content to build a deep understanding of their writing identity.
+You extract specific, evidence-based patterns — not generic observations.
+Every claim must be grounded in the actual posts provided."""
+
+
+BUILD_VOICE_PROFILE = """Analyze these LinkedIn posts and extract a detailed voice profile.
+
+POSTS ({post_count} total, showing top performers):
+{posts_text}
+
+Extract a structured voice profile. Be SPECIFIC — cite patterns you actually observe, not generic descriptions.
+
+Return JSON:
+{{
+  "tone": {{
+    "formality": 0.0-1.0,
+    "warmth": 0.0-1.0,
+    "confidence": 0.0-1.0,
+    "humor": 0.0-1.0,
+    "vulnerability": 0.0-1.0
+  }},
+  "structure": {{
+    "paragraph_style": "single_line|short_block|long_form",
+    "uses_line_breaks_for_emphasis": true/false,
+    "typical_post_structure": "describe the pattern"
+  }},
+  "vocabulary": {{
+    "signature_phrases": ["phrases this creator uses repeatedly"],
+    "power_words": ["strong words they favor"],
+    "avoided_words": ["words/phrases they never use"],
+    "transition_style": "abrupt|smooth|numbered|none"
+  }},
+  "anti_patterns": ["things to NEVER do when writing as this creator"],
+  "summary": "2-3 sentence description of what makes this voice distinctive"
+}}"""
+
+
+BUILD_AUDIENCE_MODEL = """Analyze these LinkedIn posts and their engagement patterns to infer the audience.
+
+POSTS WITH ENGAGEMENT ({post_count} total):
+{audience_context}
+
+Infer who engages with this content and what drives different engagement types.
+
+Return JSON:
+{{
+  "inferred_segments": [
+    {{"label": "segment description", "evidence": "why you think this", "engagement_type": "saves|comments|likes"}}
+  ],
+  "engagement_triggers": {{
+    "saves": "what content gets saved",
+    "comments": "what drives comments",
+    "reposts": "what gets shared",
+    "likes": "baseline engagement pattern"
+  }},
+  "content_gaps": ["topics the audience might want but creator hasn't covered"]
+}}"""
+
+
+BUILD_GROWTH_TRAJECTORY = """Analyze this creator's posting history chronologically to identify growth phases and inflection points.
+
+CHRONOLOGICAL POST HISTORY ({post_count} posts):
+{trajectory_context}
+
+Identify phases, milestones, and what changed when metrics improved.
+
+Return JSON:
+{{
+  "phases": [
+    {{"period": "date range", "label": "phase name", "avg_engagement": 0.0, "key_event": "what happened"}}
+  ],
+  "current_momentum": {{
+    "trend": "accelerating|stable|declining",
+    "recent_avg_engagement": 0.0
+  }},
+  "inflection_points": [
+    {{"date": "approximate", "change": "what changed", "impact": "metric impact"}}
+  ]
+}}"""
+
+
+MEMORY_DELTA = """A new post was analyzed. Determine what should change in the creator's memory.
+
+CURRENT VOICE PROFILE (summary):
+{voice_summary}
+
+CURRENT CONTENT DNA (summary):
+{dna_summary}
+
+NEW POST:
+{post_content}
+
+METRICS: {post_metrics}
+CLASSIFICATION: {classification}
+LEARNINGS: {learnings_text}
+
+Analyze whether this post reveals anything new about the creator's voice, content patterns, or audience.
+
+Return JSON:
+{{
+  "voice_adjustments": [
+    {{"key": "field_name", "value": "new value", "reason": "why"}}
+  ],
+  "audience_signals": ["new observations about audience from this post's engagement"],
+  "trajectory_update": {{"trend": "accelerating|stable|declining", "note": "why"}},
+  "contradictions": ["any patterns in this post that conflict with existing memory"]
+}}"""
+
+
+# ── Auto-Ideation Prompts ───────────────────────────────────────
+
+IDEATION_ENGINE = """Generate {count} specific LinkedIn post ideas for this creator.
+
+{context}
+
+CONTENT GAPS:
+- Underused pillar: {gap_pillar}
+
+RECENT TOPICS (avoid repetition):
+{recent_topics}
+
+Rules:
+1. STRATEGY FIRST: Follow strategy recommendations and pillar verdicts above all else. If strategy says "Invest" in a pillar, most ideas should be for that pillar. If it says "Retire" a pillar, generate ZERO ideas for it.
+2. Each topic must be a SHORT, punchy title (max 12 words) — like a headline, NOT a description. Example: "Why I stopped networking the traditional way" not a paragraph explaining the post
+3. Vary hook styles across ideas, but prefer the styles the strategy recommends
+4. Ideas should feel like something this specific creator would write (match their voice)
+5. Avoid anything similar to recent topics listed above
+6. At least one idea should directly target an active goal
+
+For EACH idea, score how well it fits this creator on a 0.0–1.0 scale considering:
+- Voice match: would this sound natural in their voice?
+- Strategy alignment: does it align with pillar verdicts and active goals?
+- Audience fit: would their audience engage with this?
+- Differentiation: is this a fresh angle they haven't covered?
+
+Also provide a fit_reason (max 4 words) explaining the score, e.g. "Invest pillar + voice match" or "Off-brand, weak fit".
+
+Respond ONLY in JSON:
+[{{"topic": "specific angle from their experience", "hook_style": "question|contrarian|story|stat|cliffhanger|list|statement", "pillar": "pillar name or null", "fit_score": 0.85, "fit_reason": "short reason"}}]"""
+
+
+SCORE_IDEAS = """Score how well each idea fits this creator.
+
+{context}
+
+IDEAS TO SCORE:
+{ideas_json}
+
+For EACH idea, evaluate on 0.0–1.0:
+- Voice match: would this sound natural in their voice?
+- Strategy alignment: does it align with pillar verdicts and active goals?
+- Audience fit: would their audience engage with this?
+- Differentiation: is this a fresh angle they haven't covered?
+
+Return the SAME ideas with fit_score and fit_reason added.
+fit_reason must be max 4 words (e.g. "Invest pillar + voice match").
+
+Respond ONLY in JSON:
+[{{"topic": "original topic unchanged", "fit_score": 0.85, "fit_reason": "short reason"}}]"""
