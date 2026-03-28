@@ -17,7 +17,7 @@ Your Posts → Metrics → AI Analysis → Playbook → AI Drafts → Post
      └──────────────────── repeat ─────────────────────────────┘
 ```
 
-Every post you log makes the next draft better. The AI extracts what's working, builds a personal playbook of your DOs and DON'Ts, then uses that playbook — plus your top-performing posts as voice reference — to generate new drafts that sound like you.
+Every post you log makes the next draft better. The AI extracts what's working, builds a personal playbook of your DOs and DON'Ts, then uses that playbook -- plus your top-performing posts as voice reference -- to generate new drafts that sound like you.
 
 You stay in the loop at every step. Nothing posts without your approval.
 
@@ -25,19 +25,19 @@ You stay in the loop at every step. Nothing posts without your approval.
 
 ## How It Works
 
-**Step 1 — Log your posts and metrics**
+**Step 1 -- Log your posts and metrics**
 Add published posts and record performance (impressions, likes, comments, saves) at 12h, 24h, 48h, and 1-week intervals. Or bulk-import from LinkedIn's Creator Analytics export.
 
-**Step 2 — AI classifies and learns**
-Each post is scored as hit, average, or miss against your personal baseline. AI extracts 2–4 insights per post with confidence scores (e.g., *"contrarian hooks drive 2x saves — 91% confidence"*). Confidence grows when the same insight is confirmed across multiple posts.
+**Step 2 -- AI classifies and learns**
+Each post is scored as hit, average, or miss against your personal baseline. AI extracts 2–4 insights per post with confidence scores (e.g., *"contrarian hooks drive 2x saves -- 91% confidence"*). Confidence grows when the same insight is confirmed across multiple posts.
 
-**Step 3 — Your playbook is generated**
-All learnings are compiled into a living strategy doc — your personal DOs, DON'Ts, and best practices. Automatically regenerates when your learnings change.
+**Step 3 -- Your playbook is generated**
+All learnings are compiled into a living strategy doc -- your personal DOs, DON'Ts, and best practices. Automatically regenerates when your learnings change.
 
-**Step 4 — AI generates ideas and drafts**
+**Step 4 -- AI generates ideas and drafts**
 The Idea Engine generates post ideas based on your pillars, memory, and past performance. Approve an idea and AI drafts multiple variants using your playbook, top posts as voice reference, hook library, and hashtag sets.
 
-**Step 5 — Review, refine, and post**
+**Step 5 -- Review, refine, and post**
 Improve drafts with AI actions (punch hook, shorten, apply playbook). Preview how it looks on LinkedIn. Auto-schedule to your best posting times, or post directly via OAuth.
 
 ---
@@ -60,15 +60,15 @@ Full CRUD for posts and metrics. Collapsible filters (author, pillar, type, clas
 Monthly view for scheduling posts. Link drafts to dates, AI-powered auto-scheduling based on your best posting times and pillar balance.
 
 **Analytics** (tabbed)
-- *Performance* — Monthly trends, pillar performance, post type comparison, hook style radar chart, content length sweet spot scatter plot, top/bottom performers
-- *Strategy* — AI strategy review with health score, playbook viewer, goal tracking
-- *System* — Posting heatmap, LLM token usage tracking
+- *Performance* -- Monthly trends, pillar performance, post type comparison, hook style radar chart, content length sweet spot scatter plot, top/bottom performers
+- *Strategy* -- AI strategy review with health score, playbook viewer, goal tracking
+- *System* -- Posting heatmap, LLM token usage tracking
 
 **Creator Profile & Memory**
 Your about-me and writing style guide that the AI uses in every draft and idea. AI-generated condensed context. Creator memory system that accumulates patterns over time.
 
 **Mood Board**
-Collect inspiration by content pillar — ideas, quotes, links, saved posts. Generate AI drafts directly from mood board items.
+Collect inspiration by content pillar -- ideas, quotes, links, saved posts. Generate AI drafts directly from mood board items.
 
 **Hooks & Hashtags**
 Save and track opening lines by style (question, contrarian, story, stat, cliffhanger, list, statement). Reusable hashtag sets by pillar with usage tracking.
@@ -80,13 +80,13 @@ Recurring content formats with preferred day/time and frequency tracking.
 Track competitor profiles with engagement benchmarks.
 
 **Settings**
-Configure AI provider (Gemini/Claude), model, temperature, creator display name, weekly posting goal, and default post time — all from the UI.
+Configure AI provider (Gemini/Claude), model, temperature, creator display name, weekly posting goal, and default post time -- all from the UI.
 
 ---
 
 ## AI Provider
 
-Configurable — use Gemini or Claude. Switch from Settings or environment:
+Configurable -- use Gemini or Claude. Switch from Settings or environment:
 
 ```env
 LINKEDIN_LLM_PROVIDER=gemini   # or "claude"
@@ -102,7 +102,7 @@ Both supported with retry logic and JSON parsing built in.
 |---|---|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Recharts |
 | Backend | FastAPI, SQLite (WAL mode), Pydantic |
-| LLM | Google Gemini or Anthropic Claude — configurable |
+| LLM | Google Gemini or Anthropic Claude -- configurable |
 
 ---
 
